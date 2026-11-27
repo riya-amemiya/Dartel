@@ -17,6 +17,7 @@ update it in the same change.
 Dartel/
 ├── Cargo.toml                # Workspace manifest, pinned dependencies, lint table
 ├── rustfmt.toml              # Formatting options that stable rustfmt accepts
+├── .mergify.yml              # Merge protection and merge queue rules
 ├── crates/
 │   ├── dartel-core/          # Library crate with no window or GPU dependency
 │   │   ├── src/
@@ -194,6 +195,9 @@ system fonts, `pbcopy`, and the IME, cannot be checked this way.
   on `ubuntu-latest`.
 - `codeql.yml` runs CodeQL on the Rust sources and the workflow files.
 - `dependabot.yml` opens weekly grouped updates for cargo and GitHub Actions.
+- `.mergify.yml` protects `main` and queues squash merges. Both wait for the
+  four `static-check.yml` jobs and the two CodeQL `Analyze` jobs. A CI job
+  that should gate merging needs its check name added there.
 
 ## Dependencies
 
