@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dartel-core"]
+members = ["crates/dartel", "crates/dartel-core"]
 resolver = "3"
 
 [workspace.package]
@@ -9,11 +9,22 @@ repository = "https://github.com/riya-amemiya/Dartel"
 
 [workspace.dependencies]
 dartel-core = { path = "crates/dartel-core" }
+fontdb = "=0.24.0"
 memchr = "=2.8.3"
 regex = "=1.13.2"
 rustix = { version = "=1.1.6", features = ["process", "pty", "stdio", "termios"] }
+swash = "=0.2.10"
 umt_rust = "=0.8.0"
 unicode-width = "=0.2.3"
+wgpu = { version = "=30.0.2", default-features = false, features = [
+    "gles",
+    "metal",
+    "parking_lot",
+    "std",
+    "vulkan",
+    "wgsl",
+] }
+winit = "=0.30.13"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
