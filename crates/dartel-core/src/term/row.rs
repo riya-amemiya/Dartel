@@ -21,6 +21,37 @@ impl Row {
         }
     }
 
+    pub(super) fn assemble(
+        cells: &[Cell],
+        marks: impl Iterator<Item = (u16, char)>,
+        cols: usize,
+        blank: Cell,
+        wrapped: bool,
+    ) -> Row {
+        let mut row = Row {
+            cells: cells.to_vec(),
+            marks: marks.collect(),
+            wrapped,
+        };
+        row.cells.resize(cols, blank);
+        row
+    }
+
+    pub(super) fn unload(self, keep: usize, cells: &mut Vec<Cell>, marks: &mut Vec<(usize, char)>) {
+        marks.extend(
+            self.marks
+                .iter()
+                .filter(|&&(column, _)| usize::from(column) < keep)
+                .map(|&(column, c)| (cells.len() + usize::from(column), c)),
+        );
+        cells.extend(
+            self.cells
+                .into_iter()
+                .chain(std::iter::repeat(Cell::default()))
+                .take(keep),
+        );
+    }
+
     #[inline]
     #[must_use]
     pub fn cells(&self) -> &[Cell] {

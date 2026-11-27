@@ -136,18 +136,24 @@ impl Grid {
         &mut self,
         lines: usize,
         cols: usize,
-        cursor: usize,
+        cursor: (usize, usize),
         blank: Cell,
-    ) -> usize {
-        let cursor = if lines < self.lines {
-            let trimmed = (self.lines - lines).min(self.lines - 1 - cursor);
+        reflow: bool,
+    ) -> (usize, usize) {
+        let (line, column) = if reflow && cols != self.cols {
+            self.reflow(cols, cursor, blank)
+        } else {
+            cursor
+        };
+        let line = if lines < self.lines {
+            let trimmed = (self.lines - lines).min(self.lines - 1 - line);
             self.rows.truncate(self.rows.len() - trimmed);
-            cursor + lines + trimmed - self.lines
+            line + lines + trimmed - self.lines
         } else {
             let restored = (lines - self.lines).min(self.history());
             self.rows
                 .extend((0..lines - self.lines - restored).map(|_| Row::new(cols, blank)));
-            cursor + restored
+            line + restored
         };
         self.lines = lines;
         self.cols = cols;
@@ -157,6 +163,90 @@ impl Grid {
         for row in self.rows.range_mut(base..) {
             row.resize(cols, blank);
         }
-        cursor
+        (line, column.min(cols - 1))
+    }
+
+    fn reflow(&mut self, cols: usize, cursor: (usize, usize), blank: Cell) -> (usize, usize) {
+        let target = self.history() + cursor.0;
+        while self.rows.len() > target + 1
+            && self
+                .rows
+                .back()
+                .is_some_and(|row| row.occupied() == 0 && !row.is_wrapped())
+        {
+            self.rows.pop_back();
+        }
+        let mut rows = VecDeque::with_capacity(self.rows.len());
+        let mut cells = Vec::new();
+        let mut marks = Vec::new();
+        let mut offset = None;
+        let mut placed = (0, 0);
+        for (index, row) in std::mem::take(&mut self.rows).into_iter().enumerate() {
+            let wrapped = row.is_wrapped();
+            let keep = if index == target {
+                offset = Some(cells.len() + cursor.1);
+                row.occupied().max(cursor.1)
+            } else {
+                row.occupied()
+            };
+            row.unload(keep, &mut cells, &mut marks);
+            if !wrapped {
+                placed =
+                    split(&mut rows, &cells, &marks, cols, blank, offset.take()).unwrap_or(placed);
+                cells.clear();
+                marks.clear();
+            }
+        }
+        if !cells.is_empty() || offset.is_some() {
+            placed = split(&mut rows, &cells, &marks, cols, blank, offset).unwrap_or(placed);
+        }
+        rows.extend((rows.len()..self.lines).map(|_| Row::new(cols, blank)));
+        let dropped = (rows.len() - self.lines).saturating_sub(self.history_limit);
+        rows.drain(..dropped);
+        self.rows = rows;
+        self.cols = cols;
+        (
+            placed
+                .0
+                .saturating_sub(dropped)
+                .saturating_sub(self.history())
+                .min(self.lines - 1),
+            placed.1,
+        )
+    }
+}
+
+fn split(
+    rows: &mut VecDeque<Row>,
+    cells: &[Cell],
+    marks: &[(usize, char)],
+    cols: usize,
+    blank: Cell,
+    cursor: Option<usize>,
+) -> Option<(usize, usize)> {
+    let mut start = 0;
+    let mut placed = None;
+    loop {
+        let limit = (start + cols).min(cells.len());
+        let end = limit - usize::from(cells.get(limit).is_some_and(|cell| cell.is_spacer()));
+        if placed.is_none()
+            && let Some(offset) = cursor.filter(|&offset| offset < end || end == cells.len())
+        {
+            placed = Some((rows.len(), (offset - start).min(cols - 1)));
+        }
+        rows.push_back(Row::assemble(
+            &cells[start..end],
+            marks
+                .iter()
+                .filter(|&&(at, _)| (start..end).contains(&at))
+                .map(|&(at, c)| ((at - start) as u16, c)),
+            cols,
+            blank,
+            end < cells.len(),
+        ));
+        if end == cells.len() {
+            return placed;
+        }
+        start = end;
     }
 }

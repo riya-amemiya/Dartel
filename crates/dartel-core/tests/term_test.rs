@@ -807,19 +807,72 @@ fn resize_growing_lines_appends_blank_rows_without_history() {
 }
 
 #[test]
-fn resize_changes_columns_and_clamps_the_cursor() {
+fn resize_rewraps_long_lines_and_joins_them_again() {
     let mut term = fed(2, 10, "abcdefgh");
     term.resize(2, 4);
-    assert_eq!(screen(&term), ["abcd", ""]);
-    assert_eq!(cursor(&term), (0, 3));
+    assert_eq!(screen(&term), ["abcd", "efgh"]);
+    assert!(term.grid().row(0).is_wrapped());
+    assert_eq!(cursor(&term), (1, 3));
     term.resize(2, 10);
-    assert_eq!(screen(&term), ["abcd", ""]);
+    assert_eq!(screen(&term), ["abcdefgh", ""]);
+    assert!(!term.grid().row(0).is_wrapped());
+    assert_eq!(cursor(&term), (0, 7));
     assert_eq!((term.lines(), term.cols()), (2, 10));
 }
 
 #[test]
-fn resize_cutting_a_wide_character_blanks_its_first_half() {
-    let mut term = fed(1, 6, "ab\u{3042}");
+fn resize_rewraps_history_rows() {
+    let mut term = fed(2, 6, "abcdef\r\nx\r\ny");
+    term.resize(2, 3);
+    assert_eq!(term.grid().history(), 2);
+    assert_eq!(absolute(&term, 0), "abc");
+    assert_eq!(absolute(&term, 1), "def");
+    assert_eq!(screen(&term), ["x", "y"]);
+    assert_eq!(cursor(&term), (1, 1));
+}
+
+#[test]
+fn resize_keeps_blank_rows_below_the_cursor_out_of_the_rewrap() {
+    let mut term = fed(4, 6, "abcdef");
+    term.resize(4, 3);
+    assert_eq!(screen(&term), ["abc", "def", "", ""]);
+    assert_eq!(term.grid().history(), 0);
+    assert_eq!(cursor(&term), (1, 2));
+}
+
+#[test]
+fn resize_keeps_combining_marks_with_their_cells() {
+    let mut term = fed(2, 6, "abe\u{0301}f");
+    term.resize(2, 3);
+    assert_eq!(screen(&term), ["abe\u{0301}", "f"]);
+    assert_eq!(
+        term.grid().row(0).marks(2).collect::<Vec<_>>(),
+        ['\u{0301}']
+    );
+}
+
+#[test]
+fn resize_truncates_the_alternate_screen_and_rewraps_the_primary_one() {
+    let mut term = fed(2, 6, "abcdef\x1b[?1049h\x1b[HABCDEF");
+    term.resize(2, 3);
+    assert_eq!(screen(&term), ["ABC", ""]);
+    feed(&mut term, "\x1b[?1049l");
+    assert_eq!(screen(&term), ["abc", "def"]);
+}
+
+#[test]
+fn resize_moves_a_wide_character_that_no_longer_fits_to_the_next_row() {
+    let mut term = fed(2, 6, "ab\u{3042}c");
+    term.resize(2, 3);
+    assert_eq!(screen(&term), ["ab", "\u{3042}c"]);
+    assert!(!term.grid().row(0).cells()[2].is_wide());
+    assert!(term.grid().row(1).cells()[0].is_wide());
+    assert_eq!(cursor(&term), (1, 2));
+}
+
+#[test]
+fn resize_cutting_a_wide_character_on_the_alternate_screen_blanks_its_first_half() {
+    let mut term = fed(1, 6, "\x1b[?1049h\x1b[Hab\u{3042}");
     term.resize(1, 3);
     assert_eq!(screen(&term), ["ab"]);
     assert!(!term.grid().row(0).cells()[2].is_wide());

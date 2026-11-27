@@ -179,21 +179,31 @@ impl Term {
         if (lines, cols) == (self.lines(), self.cols()) {
             return;
         }
-        self.cursor.line = self
-            .grid
-            .resize(lines, cols, self.cursor.line, Cell::default());
-        self.cursor.column = self.cursor.column.min(cols - 1);
-        self.cursor.pending_wrap = false;
-        self.inactive_saved.cursor.line = self.inactive.resize(
+        let alternate = self.modes.contains(Modes::ALTERNATE);
+        (self.cursor.line, self.cursor.column) = self.grid.resize(
             lines,
             cols,
-            self.inactive_saved
-                .cursor
-                .line
-                .min(self.inactive.lines() - 1),
+            (self.cursor.line, self.cursor.column),
             Cell::default(),
+            !alternate,
         );
-        self.inactive_saved.cursor.column = self.inactive_saved.cursor.column.min(cols - 1);
+        self.cursor.pending_wrap = false;
+        (
+            self.inactive_saved.cursor.line,
+            self.inactive_saved.cursor.column,
+        ) = self.inactive.resize(
+            lines,
+            cols,
+            (
+                self.inactive_saved
+                    .cursor
+                    .line
+                    .min(self.inactive.lines() - 1),
+                self.inactive_saved.cursor.column,
+            ),
+            Cell::default(),
+            alternate,
+        );
         self.saved.cursor.line = self.saved.cursor.line.min(lines - 1);
         self.saved.cursor.column = self.saved.cursor.column.min(cols - 1);
         self.top = 0;
