@@ -100,11 +100,6 @@ impl Damage {
     pub fn line(&self, line: usize) -> bool {
         self.full || self.lines[line]
     }
-
-    #[must_use]
-    pub fn any(&self) -> bool {
-        self.full || self.lines.contains(&true)
-    }
 }
 
 #[derive(Clone, Debug)]

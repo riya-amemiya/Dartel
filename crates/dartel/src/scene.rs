@@ -39,6 +39,7 @@ struct Look {
 
 pub struct Overlay<'a> {
     pub focused: bool,
+    pub caret: bool,
     pub preedit: &'a str,
     pub selection: Option<Span>,
     pub matches: &'a [Span],
@@ -273,7 +274,7 @@ impl Scene {
         if let Some(span) = overlay.selection {
             self.highlight(term, span, term.palette().foreground, SELECTION_ALPHA);
         }
-        if overlay.banner.is_none() && overlay.preedit.is_empty() {
+        if overlay.caret && overlay.banner.is_none() && overlay.preedit.is_empty() {
             self.compose_cursor(gpu, term, overlay.focused);
         }
         if let Some(text) = overlay.banner {

@@ -929,9 +929,8 @@ fn damage_tracks_touched_lines_and_full_redraws() {
     let mut term = term(3, 5);
     assert!(term.damage().is_full());
     term.reset_damage();
-    assert!(!term.damage().any());
+    assert!((0..3).all(|line| !term.damage().line(line)));
     feed(&mut term, "\x1b[2;1Ha");
-    assert!(term.damage().any());
     assert!(!term.damage().is_full());
     assert!(!term.damage().line(0));
     assert!(term.damage().line(1));

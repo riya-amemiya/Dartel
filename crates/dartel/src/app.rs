@@ -27,6 +27,7 @@ const LINES: u32 = 24;
 const WHEEL_LINES: f64 = 3.0;
 const SEARCH_LIMIT: usize = 10_000;
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+const BLINK: Duration = Duration::from_millis(500);
 
 pub struct App {
     proxy: EventLoopProxy<Signal>,
@@ -56,6 +57,8 @@ struct View {
     pressed: Option<u8>,
     reported: Option<(usize, usize)>,
     held: Option<Instant>,
+    blink: Instant,
+    blinking: bool,
     caret: Option<(usize, usize)>,
 }
 
@@ -127,6 +130,8 @@ impl View {
             pressed: None,
             reported: None,
             held: None,
+            blink: Instant::now(),
+            blinking: false,
             caret: None,
         })
     }
@@ -168,11 +173,14 @@ impl View {
             if term.take_title_change() {
                 self.window.set_title(term.title());
             }
+            self.blinking = self.focused && term.cursor().blinking && term.cursor().visible;
             self.scene.compose(
                 &self.gpu,
                 &term,
                 &Overlay {
                     focused: self.focused,
+                    caret: !self.blinking
+                        || (self.blink.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2),
                     preedit: &self.preedit,
                     selection: self.selection,
                     matches: self
@@ -222,8 +230,22 @@ impl View {
         }
     }
 
+    fn deadline(&self) -> Option<Instant> {
+        [
+            self.held.map(|since| since + SYNC_TIMEOUT),
+            self.blinking.then(|| {
+                self.blink
+                    + BLINK * (self.blink.elapsed().as_millis() / BLINK.as_millis() + 1) as u32
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
     fn focus(&mut self, focused: bool) {
         self.focused = focused;
+        self.blink = Instant::now();
         if self.session.term().modes().contains(Modes::FOCUS) {
             self.session
                 .send(if focused { b"\x1b[I" } else { b"\x1b[O" }.to_vec());
@@ -494,6 +516,7 @@ impl View {
         if let Some(bytes) = input::encode(event, self.modifiers, modes) {
             self.session.term().reset_display();
             self.selection = None;
+            self.blink = Instant::now();
             self.session.send(bytes);
             self.window.request_redraw();
         }
@@ -574,9 +597,11 @@ impl ApplicationHandler<Signal> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(match self.view.as_ref().and_then(|view| view.held) {
-            Some(since) => ControlFlow::WaitUntil(since + SYNC_TIMEOUT),
-            None => ControlFlow::Wait,
-        });
+        event_loop.set_control_flow(
+            self.view
+                .as_ref()
+                .and_then(View::deadline)
+                .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
+        );
     }
 }
