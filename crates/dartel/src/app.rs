@@ -53,6 +53,8 @@ struct View {
     selection: Option<Span>,
     search: Option<Search>,
     wheel: f64,
+    pressed: Option<u8>,
+    reported: Option<(usize, usize)>,
     held: Option<Instant>,
     caret: Option<(usize, usize)>,
 }
@@ -122,6 +124,8 @@ impl View {
             selection: None,
             search: None,
             wheel: 0.0,
+            pressed: None,
+            reported: None,
             held: None,
             caret: None,
         })
@@ -236,18 +240,82 @@ impl View {
         }
     }
 
-    fn press(&mut self, state: ElementState) {
-        if state == ElementState::Pressed {
+    fn reporting(&self) -> Option<Modes> {
+        Some(self.session.term().modes())
+            .filter(|modes| modes.contains(Modes::ANY_MOUSE) && !self.modifiers.state().shift_key())
+    }
+
+    fn report(&self, modes: Modes, button: u8, released: bool) {
+        let (line, column) = {
+            let (line, column) = self.scene.cell_at(self.pointer.x, self.pointer.y);
+            let term = self.session.term();
+            (line.min(term.lines() - 1), column.min(term.cols() - 1))
+        };
+        let state = self.modifiers.state();
+        let code = button
+            + 4 * u8::from(state.shift_key())
+            + 8 * u8::from(state.alt_key())
+            + 16 * u8::from(state.control_key());
+        if modes.contains(Modes::MOUSE_SGR) {
+            self.session.send(
+                format!(
+                    "\x1b[<{code};{};{}{}",
+                    column + 1,
+                    line + 1,
+                    if released { 'm' } else { 'M' }
+                )
+                .into_bytes(),
+            );
+        } else if line < 223 && column < 223 {
+            self.session.send(vec![
+                0x1B,
+                b'[',
+                b'M',
+                32 + if released { code | 3 } else { code },
+                33 + column as u8,
+                33 + line as u8,
+            ]);
+        }
+    }
+
+    fn press(&mut self, button: MouseButton, state: ElementState) {
+        let code = match button {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            _ => return,
+        };
+        if let Some(modes) = self.reporting() {
+            self.pressed = (state == ElementState::Pressed).then_some(code);
+            self.report(modes, code, state == ElementState::Released);
+        } else if button == MouseButton::Left && state == ElementState::Pressed {
             self.anchor = Some(self.pointed());
             self.selection = None;
             self.window.request_redraw();
-        } else {
+        } else if button == MouseButton::Left {
             self.anchor = None;
         }
     }
 
     fn point(&mut self, position: PhysicalPosition<f64>) {
         self.pointer = position;
+        if let Some(modes) = self.reporting() {
+            let cell = self.scene.cell_at(position.x, position.y);
+            if self.reported != Some(cell) {
+                self.reported = Some(cell);
+                match self.pressed {
+                    Some(code)
+                        if modes.contains(Modes::MOUSE_DRAG)
+                            || modes.contains(Modes::MOUSE_MOTION) =>
+                    {
+                        self.report(modes, code + 32, false);
+                    }
+                    None if modes.contains(Modes::MOUSE_MOTION) => self.report(modes, 35, false),
+                    _ => {}
+                }
+            }
+            return;
+        }
         if let Some(anchor) = self.anchor {
             let head = self.pointed();
             let selection = (anchor != head).then_some(Span {
@@ -261,35 +329,42 @@ impl View {
         }
     }
 
-    fn scroll(&mut self, lines: f64) {
-        self.wheel += lines;
-        let whole = self.wheel.trunc();
-        self.wheel -= whole;
-        if whole == 0.0 {
-            return;
-        }
+    fn scroll(&mut self, lines: isize) {
         let mut term = self.session.term();
         if !term.modes().contains(Modes::ALTERNATE) {
-            term.scroll_display(whole as isize);
+            term.scroll_display(lines);
             self.window.request_redraw();
         } else if term.modes().contains(Modes::ALTERNATE_SCROLL) {
-            let key: &[u8] = match (whole > 0.0, term.modes().contains(Modes::APP_CURSOR)) {
+            let key: &[u8] = match (lines > 0, term.modes().contains(Modes::APP_CURSOR)) {
                 (true, true) => b"\x1bOA",
                 (true, false) => b"\x1b[A",
                 (false, true) => b"\x1bOB",
                 (false, false) => b"\x1b[B",
             };
-            self.session.send(key.repeat(whole.abs() as usize));
+            self.session.send(key.repeat(lines.unsigned_abs()));
         }
     }
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
-        self.scroll(match delta {
+        self.wheel += match delta {
             MouseScrollDelta::LineDelta(_, lines) => f64::from(lines) * WHEEL_LINES,
             MouseScrollDelta::PixelDelta(position) => {
                 position.y / f64::from(self.scene.metrics().height)
             }
-        });
+        };
+        let lines = self.wheel.trunc() as isize;
+        self.wheel -= lines as f64;
+        if lines == 0 {
+            return;
+        }
+        match self.reporting() {
+            Some(modes) => {
+                for _ in 0..lines.unsigned_abs() {
+                    self.report(modes, if lines > 0 { 64 } else { 65 }, false);
+                }
+            }
+            None => self.scroll(lines),
+        }
     }
 
     fn paste(&self) {
@@ -395,11 +470,11 @@ impl View {
                 self.window.request_redraw();
             }
             Key::Named(NamedKey::PageUp) if state.shift_key() => {
-                let page = self.session.term().lines() as f64;
+                let page = self.session.term().lines() as isize;
                 self.scroll(page);
             }
             Key::Named(NamedKey::PageDown) if state.shift_key() => {
-                let page = self.session.term().lines() as f64;
+                let page = self.session.term().lines() as isize;
                 self.scroll(-page);
             }
             _ => return state.super_key(),
@@ -493,11 +568,7 @@ impl ApplicationHandler<Signal> for App {
             WindowEvent::Ime(ime) => view.ime(ime),
             WindowEvent::MouseWheel { delta, .. } => view.wheel(delta),
             WindowEvent::CursorMoved { position, .. } => view.point(position),
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => view.press(state),
+            WindowEvent::MouseInput { state, button, .. } => view.press(button, state),
             _ => {}
         }
     }
