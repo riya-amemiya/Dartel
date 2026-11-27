@@ -1,0 +1,27 @@
+shared:
+  ci_checks: &ci_checks
+    - check-success = test (macos-latest, aarch64-apple-darwin)
+    - check-success = test (ubuntu-latest, x86_64-unknown-linux-gnu)
+    - check-success = lint (macos-latest, aarch64-apple-darwin)
+    - check-success = lint (ubuntu-latest, x86_64-unknown-linux-gnu)
+    - check-success = Analyze (actions)
+    - check-success = Analyze (rust)
+
+merge_protections_settings:
+  auto_merge_conditions:
+    - -draft
+
+merge_protections:
+  - name: Main
+    if:
+      - base = main
+    success_conditions:
+      - and: *ci_checks
+
+queue_rules:
+  - name: default
+    merge_method: squash
+    queue_conditions:
+      - and: *ci_checks
+    merge_conditions:
+      - and: *ci_checks

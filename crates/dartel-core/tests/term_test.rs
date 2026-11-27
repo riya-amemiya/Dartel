@@ -567,7 +567,7 @@ fn dynamic_color_queries_reply_with_the_matching_terminator() {
     let mut term = fed(1, 5, "\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]12;?\x07");
     assert_eq!(
         reply(&mut term),
-        "\x1b]11;rgb:1d1d/1f1f/2121\x07\x1b]10;rgb:c5c5/c8c8/c6c6\x1b\\\x1b]12;rgb:c5c5/c8c8/c6c6\x07"
+        "\x1b]11;rgb:2121/2727/3333\x07\x1b]10;rgb:c5c5/c8c8/c6c6\x1b\\\x1b]12;rgb:c5c5/c8c8/c6c6\x07"
     );
 }
 

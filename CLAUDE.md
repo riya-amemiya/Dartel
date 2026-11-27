@@ -17,6 +17,7 @@ update it in the same change.
 Dartel/
 ├── Cargo.toml                # Workspace manifest, pinned dependencies, lint table
 ├── rustfmt.toml              # Formatting options that stable rustfmt accepts
+├── .mergify.yml              # Merge protection and merge queue rules
 ├── crates/
 │   ├── dartel-core/          # Library crate with no window or GPU dependency
 │   │   ├── src/
@@ -54,6 +55,10 @@ Dartel/
 │   │       ├── term_test.rs
 │   │       └── vt_test.rs
 │   └── dartel/               # Binary crate
+│       ├── macos/
+│       │   ├── Info.plist    # Bundle metadata for Dartel.app
+│       │   ├── icon.png      # 1024 px rendering of icon.svg, source of Dartel.icns
+│       │   └── icon.svg      # Application icon drawing
 │       └── src/
 │           ├── main.rs       # Event loop start
 │           ├── app.rs        # winit handler, selection, search prompt, shortcuts
@@ -72,6 +77,7 @@ Dartel/
     ├── PULL_REQUEST_TEMPLATE.md
     └── workflows/
         ├── codeql.yml        # CodeQL for Rust and workflow files
+        ├── release.yml       # Release notes and packaged builds on a version tag
         └── static-check.yml  # Build, test, format check, clippy
 ```
 
@@ -185,6 +191,17 @@ import -window root shot.png
 selection, and `ctrl+shift+v` pastes. Running on macOS itself, with Metal, the
 system fonts, `pbcopy`, and the IME, cannot be checked this way.
 
+## Application Icon
+
+`crates/dartel/macos/icon.svg` is the drawing. `icon.png` is its 1024 px
+rendering, and the release workflow builds `Dartel.icns` from it. After
+editing the drawing, render it again with headless Chromium so the corners
+stay transparent:
+
+```sh
+chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00000000 --window-size=1024,1024 --screenshot=crates/dartel/macos/icon.png "file://$PWD/crates/dartel/macos/icon.svg"
+```
+
 ## CI/CD Pipeline
 
 - `static-check.yml` runs on pull requests and pushes to `main`. The `test`
@@ -193,7 +210,16 @@ system fonts, `pbcopy`, and the IME, cannot be checked this way.
   `aarch64-apple-darwin` on `macos-latest` and for `x86_64-unknown-linux-gnu`
   on `ubuntu-latest`.
 - `codeql.yml` runs CodeQL on the Rust sources and the workflow files.
+- `release.yml` runs when a tag shaped like `1.2.3` is pushed. It packages
+  `Dartel.app` for `aarch64-apple-darwin` and the `dartel` binary for
+  `x86_64-unknown-linux-gnu`, then creates a GitHub Release with generated
+  notes and both packages attached. A pull request that touches the workflow
+  or `crates/dartel/macos/` runs the packaging jobs without creating a
+  release.
 - `dependabot.yml` opens weekly grouped updates for cargo and GitHub Actions.
+- `.mergify.yml` protects `main` and queues squash merges. Both wait for the
+  four `static-check.yml` jobs and the two CodeQL `Analyze` jobs. A CI job
+  that should gate merging needs its check name added there.
 
 ## Dependencies
 

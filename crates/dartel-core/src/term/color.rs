@@ -86,7 +86,7 @@ const ANSI: [Rgb; 16] = [
 ];
 
 const FOREGROUND: Rgb = Rgb::new(0xC5, 0xC8, 0xC6);
-const BACKGROUND: Rgb = Rgb::new(0x1D, 0x1F, 0x21);
+const BACKGROUND: Rgb = Rgb::new(0x21, 0x27, 0x33);
 
 const fn cube(step: usize) -> u8 {
     if step == 0 { 0 } else { (55 + 40 * step) as u8 }
