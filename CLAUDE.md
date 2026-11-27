@@ -55,6 +55,8 @@ Dartel/
 │   │       ├── term_test.rs
 │   │       └── vt_test.rs
 │   └── dartel/               # Binary crate
+│       ├── macos/
+│       │   └── Info.plist    # Bundle metadata for Dartel.app
 │       └── src/
 │           ├── main.rs       # Event loop start
 │           ├── app.rs        # winit handler, selection, search prompt, shortcuts
@@ -73,6 +75,7 @@ Dartel/
     ├── PULL_REQUEST_TEMPLATE.md
     └── workflows/
         ├── codeql.yml        # CodeQL for Rust and workflow files
+        ├── release.yml       # Release notes and packaged builds on a version tag
         └── static-check.yml  # Build, test, format check, clippy
 ```
 
@@ -194,6 +197,12 @@ system fonts, `pbcopy`, and the IME, cannot be checked this way.
   `aarch64-apple-darwin` on `macos-latest` and for `x86_64-unknown-linux-gnu`
   on `ubuntu-latest`.
 - `codeql.yml` runs CodeQL on the Rust sources and the workflow files.
+- `release.yml` runs when a tag shaped like `1.2.3` is pushed. It packages
+  `Dartel.app` for `aarch64-apple-darwin` and the `dartel` binary for
+  `x86_64-unknown-linux-gnu`, then creates a GitHub Release with generated
+  notes and both packages attached. A pull request that touches the workflow
+  or `crates/dartel/macos/` runs the packaging jobs without creating a
+  release.
 - `dependabot.yml` opens weekly grouped updates for cargo and GitHub Actions.
 - `.mergify.yml` protects `main` and queues squash merges. Both wait for the
   four `static-check.yml` jobs and the two CodeQL `Analyze` jobs. A CI job

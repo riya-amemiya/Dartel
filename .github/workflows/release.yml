@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - crates/dartel/macos/**
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: Dartel-aarch64-apple-darwin.zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: dartel-x86_64-unknown-linux-gnu.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} --no-self-update
+
+      - name: Build
+        run: cargo build --release --locked -p dartel --target ${{ matrix.target }}
+
+      - name: Package the macOS app
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p Dartel.app/Contents/MacOS
+          cp crates/dartel/macos/Info.plist Dartel.app/Contents/Info.plist
+          cp target/${{ matrix.target }}/release/dartel Dartel.app/Contents/MacOS/dartel
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            plutil -replace CFBundleShortVersionString -string "$GITHUB_REF_NAME" Dartel.app/Contents/Info.plist
+            plutil -replace CFBundleVersion -string "$GITHUB_REF_NAME" Dartel.app/Contents/Info.plist
+          fi
+          plutil -lint Dartel.app/Contents/Info.plist
+          codesign --force --sign - Dartel.app
+          codesign --verify --verbose=2 Dartel.app
+          ditto -c -k --keepParent Dartel.app ${{ matrix.asset }}
+
+      - name: Package the Linux binary
+        if: runner.os == 'Linux'
+        run: tar -czf ${{ matrix.asset }} -C target/${{ matrix.target }}/release dartel
+
+      - name: Upload the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-${{ matrix.target }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag' && github.repository == 'riya-amemiya/Dartel'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: package-*
+
+      - name: Create the release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*/* --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
