@@ -2,6 +2,10 @@
 
 A fast terminal emulator written in Rust. Apple Silicon macOS is the first target and x86_64 Linux is the second.
 
+## Name
+
+Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With the long vowel, the name sounds like acceleration stretching out.
+
 ## Features
 
 - GPU rendering with wgpu, one draw call per frame
