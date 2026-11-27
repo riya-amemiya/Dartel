@@ -9,6 +9,8 @@ use crate::font::{Fonts, Metrics, REGULAR};
 use crate::gpu::{ATLAS_SIZE, Gpu, Quad};
 
 const SELECTION_ALPHA: u8 = 80;
+const MATCH_ALPHA: u8 = 90;
+const CURRENT_ALPHA: u8 = 170;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Glyph {
@@ -39,6 +41,18 @@ pub struct Overlay<'a> {
     pub focused: bool,
     pub preedit: &'a str,
     pub selection: Option<Span>,
+    pub matches: &'a [Span],
+    pub current: Option<Span>,
+    pub banner: Option<&'a str>,
+}
+
+struct Label<'a> {
+    line: usize,
+    column: usize,
+    text: &'a str,
+    ink: Rgb,
+    paper: Rgb,
+    underlined: bool,
 }
 
 pub struct Scene {
@@ -244,11 +258,58 @@ impl Scene {
         for row in &self.rows {
             self.quads.extend_from_slice(&row.glyphs);
         }
-        self.compose_selection(term, overlay);
-        if overlay.preedit.is_empty() {
+        let first = term.grid().history() - term.display_offset();
+        for span in overlay.matches[overlay
+            .matches
+            .partition_point(|span| span.end.line < first)..]
+            .iter()
+            .take_while(|span| span.start.line < first + term.lines())
+        {
+            self.highlight(term, *span, term.palette().indexed(3), MATCH_ALPHA);
+        }
+        if let Some(span) = overlay.current {
+            self.highlight(term, span, term.palette().indexed(3), CURRENT_ALPHA);
+        }
+        if let Some(span) = overlay.selection {
+            self.highlight(term, span, term.palette().foreground, SELECTION_ALPHA);
+        }
+        if overlay.banner.is_none() && overlay.preedit.is_empty() {
             self.compose_cursor(gpu, term, overlay.focused);
-        } else {
-            self.compose_preedit(gpu, term, overlay.preedit);
+        }
+        if let Some(text) = overlay.banner {
+            self.quads.push(solid(
+                self.padding,
+                self.padding + (term.lines() - 1) as i32 * self.fonts.metrics().height as i32,
+                term.cols() as i32 * self.fonts.metrics().width as i32,
+                self.fonts.metrics().height as i32,
+                term.palette().foreground,
+                u8::MAX,
+            ));
+            self.label(
+                gpu,
+                term,
+                &Label {
+                    line: term.lines() - 1,
+                    column: 0,
+                    text,
+                    ink: term.palette().background,
+                    paper: term.palette().foreground,
+                    underlined: false,
+                },
+            );
+        } else if !overlay.preedit.is_empty() {
+            self.label(
+                gpu,
+                term,
+                &Label {
+                    line: term.cursor().line.min(term.lines() - 1),
+                    column: term.cursor().column,
+                    text: overlay.preedit,
+                    ink: term.palette().foreground,
+                    paper: term.palette().background,
+                    underlined: true,
+                },
+            );
         }
     }
 
@@ -364,36 +425,38 @@ impl Scene {
         complete
     }
 
-    fn compose_selection(&mut self, term: &Term, overlay: &Overlay<'_>) {
-        let Some(span) = overlay.selection else {
-            return;
-        };
+    fn highlight(&mut self, term: &Term, span: Span, color: Rgb, alpha: u8) {
         let metrics = self.fonts.metrics();
         let (width, height) = (metrics.width as i32, metrics.height as i32);
         let first = term.grid().history() - term.display_offset();
-        for line in 0..term.lines() {
-            let absolute = first + line;
-            if !(span.start.line..=span.end.line).contains(&absolute) {
-                continue;
-            }
-            let start = if absolute == span.start.line {
+        for line in span.start.line.max(first)..=span.end.line.min(first + term.lines() - 1) {
+            let start = if line == span.start.line {
                 span.start.column
             } else {
                 0
             };
-            let end = if absolute == span.end.line {
-                (span.end.column + 1).min(term.cols())
+            let end = if line == span.end.line {
+                (span.end.column
+                    + 1
+                    + usize::from(
+                        term.grid()
+                            .absolute(line)
+                            .cells()
+                            .get(span.end.column)
+                            .is_some_and(|cell| cell.is_wide()),
+                    ))
+                .min(term.cols())
             } else {
                 term.cols()
             };
             if start < end {
                 self.quads.push(solid(
                     self.padding + start as i32 * width,
-                    self.padding + line as i32 * height,
+                    self.padding + (line - first) as i32 * height,
                     (end - start) as i32 * width,
                     height,
-                    term.palette().foreground,
-                    SELECTION_ALPHA,
+                    color,
+                    alpha,
                 ));
             }
         }
@@ -471,27 +534,20 @@ impl Scene {
         }
     }
 
-    fn compose_preedit(&mut self, gpu: &Gpu, term: &Term, preedit: &str) {
+    fn label(&mut self, gpu: &Gpu, term: &Term, label: &Label<'_>) {
         let metrics = self.fonts.metrics();
         let (width, height) = (metrics.width as i32, metrics.height as i32);
-        let cursor = term.cursor();
-        let top = self.padding + cursor.line.min(term.lines() - 1) as i32 * height;
-        let mut column = cursor.column;
-        for c in preedit.chars() {
+        let top = self.padding + label.line as i32 * height;
+        let mut column = label.column;
+        for c in label.text.chars() {
             let cells = c.width().unwrap_or(0);
             if cells == 0 || column + cells > term.cols() {
                 continue;
             }
             let left = self.padding + column as i32 * width;
             let span = cells as i32 * width;
-            self.quads.push(solid(
-                left,
-                top,
-                span,
-                height,
-                term.palette().background,
-                u8::MAX,
-            ));
+            self.quads
+                .push(solid(left, top, span, height, label.paper, u8::MAX));
             if let Some(glyph) = self.glyph(gpu, c, REGULAR)
                 && glyph.size[0] > 0
             {
@@ -499,17 +555,19 @@ impl Scene {
                     left + centering(span, glyph) + i32::from(glyph.left),
                     top + metrics.ascent - i32::from(glyph.top),
                     glyph,
-                    term.palette().foreground,
+                    label.ink,
                 ));
             }
-            self.quads.push(solid(
-                left,
-                top + metrics.underline,
-                span,
-                metrics.stroke as i32,
-                term.palette().foreground,
-                u8::MAX,
-            ));
+            if label.underlined {
+                self.quads.push(solid(
+                    left,
+                    top + metrics.underline,
+                    span,
+                    metrics.stroke as i32,
+                    label.ink,
+                    u8::MAX,
+                ));
+            }
             column += cells;
         }
     }

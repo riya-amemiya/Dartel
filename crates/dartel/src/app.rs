@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dartel_core::pty::Size;
+use dartel_core::search::{Case, Query};
 use dartel_core::term::{Modes, Point, Span};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -24,11 +25,19 @@ const PADDING: f64 = 4.0;
 const COLUMNS: u32 = 80;
 const LINES: u32 = 24;
 const WHEEL_LINES: f64 = 3.0;
+const SEARCH_LIMIT: usize = 10_000;
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 
 pub struct App {
     proxy: EventLoopProxy<Signal>,
     view: Option<View>,
+}
+
+#[derive(Default)]
+struct Search {
+    query: String,
+    matches: Vec<Span>,
+    current: usize,
 }
 
 struct View {
@@ -42,6 +51,7 @@ struct View {
     pointer: PhysicalPosition<f64>,
     anchor: Option<Point>,
     selection: Option<Span>,
+    search: Option<Search>,
     wheel: f64,
     held: Option<Instant>,
     caret: Option<(usize, usize)>,
@@ -110,6 +120,7 @@ impl View {
             pointer: PhysicalPosition::new(0.0, 0.0),
             anchor: None,
             selection: None,
+            search: None,
             wheel: 0.0,
             held: None,
             caret: None,
@@ -123,7 +134,7 @@ impl View {
         self.gpu.resize(size.width, size.height);
         self.session.resize(pty_size(&self.scene, size));
         self.selection = None;
-        self.window.request_redraw();
+        self.find();
     }
 
     fn rescale(&mut self, scale: f64) {
@@ -133,6 +144,15 @@ impl View {
     }
 
     fn redraw(&mut self) {
+        let banner = self.search.as_ref().map(|search| {
+            format!(
+                "find: {}{}  {}/{}",
+                search.query,
+                self.preedit,
+                (search.current + 1).min(search.matches.len()),
+                search.matches.len()
+            )
+        });
         let (clear, clipboard, bell, caret) = {
             let mut term = self.session.frame();
             if term.modes().contains(Modes::SYNC_UPDATE)
@@ -151,6 +171,15 @@ impl View {
                     focused: self.focused,
                     preedit: &self.preedit,
                     selection: self.selection,
+                    matches: self
+                        .search
+                        .as_ref()
+                        .map_or(&[], |search| search.matches.as_slice()),
+                    current: self
+                        .search
+                        .as_ref()
+                        .and_then(|search| search.matches.get(search.current).copied()),
+                    banner: banner.as_deref(),
                 },
             );
             term.reset_damage();
@@ -170,11 +199,10 @@ impl View {
         }
         if self.caret != Some(caret) {
             self.caret = Some(caret);
-            let metrics = self.scene.metrics();
             let origin = self.scene.cell_origin(caret.0, caret.1);
             self.window.set_ime_cursor_area(
                 PhysicalPosition::new(origin.0, origin.1),
-                PhysicalSize::new(metrics.width, metrics.height),
+                PhysicalSize::new(self.scene.metrics().width, self.scene.metrics().height),
             );
         }
         self.window.pre_present_notify();
@@ -241,19 +269,17 @@ impl View {
             return;
         }
         let mut term = self.session.term();
-        if term.modes().contains(Modes::ALTERNATE) {
-            if term.modes().contains(Modes::ALTERNATE_SCROLL) {
-                let key: &[u8] = match (whole > 0.0, term.modes().contains(Modes::APP_CURSOR)) {
-                    (true, true) => b"\x1bOA",
-                    (true, false) => b"\x1b[A",
-                    (false, true) => b"\x1bOB",
-                    (false, false) => b"\x1b[B",
-                };
-                self.session.send(key.repeat(whole.abs() as usize));
-            }
-        } else {
+        if !term.modes().contains(Modes::ALTERNATE) {
             term.scroll_display(whole as isize);
             self.window.request_redraw();
+        } else if term.modes().contains(Modes::ALTERNATE_SCROLL) {
+            let key: &[u8] = match (whole > 0.0, term.modes().contains(Modes::APP_CURSOR)) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            self.session.send(key.repeat(whole.abs() as usize));
         }
     }
 
@@ -287,6 +313,73 @@ impl View {
         }
     }
 
+    fn find(&mut self) {
+        if let Some(search) = &mut self.search {
+            search.matches = Query::regex(&search.query, Case::Smart)
+                .or_else(|_| Query::literal(&search.query, Case::Smart))
+                .map(|query| self.session.term().search(&query, SEARCH_LIMIT))
+                .unwrap_or_default();
+            search.current = search.matches.len().saturating_sub(1);
+        }
+        self.reveal();
+    }
+
+    fn step(&mut self, forward: bool) {
+        if let Some(search) = &mut self.search
+            && !search.matches.is_empty()
+        {
+            search.current = (search.current + if forward { 1 } else { search.matches.len() - 1 })
+                % search.matches.len();
+        }
+        self.reveal();
+    }
+
+    fn reveal(&mut self) {
+        if let Some(span) = self
+            .search
+            .as_ref()
+            .and_then(|search| search.matches.get(search.current))
+        {
+            let mut term = self.session.term();
+            let first = term.grid().history() - term.display_offset();
+            if !(first..first + term.lines() - 1).contains(&span.start.line) {
+                let delta = term
+                    .grid()
+                    .history()
+                    .saturating_sub(span.start.line.saturating_sub(term.lines() / 2))
+                    as isize
+                    - term.display_offset() as isize;
+                term.scroll_display(delta);
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    fn search_key(&mut self, event: &KeyEvent) {
+        match (&event.logical_key, &mut self.search) {
+            (Key::Named(NamedKey::Escape), _) => {
+                self.search = None;
+                self.window.request_redraw();
+            }
+            (Key::Named(NamedKey::Enter), _) => self.step(self.modifiers.state().shift_key()),
+            (Key::Named(NamedKey::Backspace), Some(search)) => {
+                search.query.pop();
+                self.find();
+            }
+            (_, Some(search)) => {
+                if let Some(text) = event
+                    .text
+                    .as_deref()
+                    .filter(|text| !text.chars().any(char::is_control))
+                {
+                    search.query.push_str(text);
+                    self.find();
+                }
+            }
+            (_, None) => {}
+        }
+    }
+
     fn shortcut(&mut self, event: &KeyEvent) -> bool {
         let state = self.modifiers.state();
         let command = if cfg!(target_os = "macos") {
@@ -297,6 +390,10 @@ impl View {
         match &event.logical_key {
             Key::Character(text) if command && text.eq_ignore_ascii_case("v") => self.paste(),
             Key::Character(text) if command && text.eq_ignore_ascii_case("c") => self.copy(),
+            Key::Character(text) if command && text.eq_ignore_ascii_case("f") => {
+                self.search = Some(Search::default());
+                self.window.request_redraw();
+            }
             Key::Named(NamedKey::PageUp) if state.shift_key() => {
                 let page = self.session.term().lines() as f64;
                 self.scroll(page);
@@ -314,6 +411,10 @@ impl View {
         if self.shortcut(event) || !self.preedit.is_empty() {
             return;
         }
+        if self.search.is_some() {
+            self.search_key(event);
+            return;
+        }
         let modes = self.session.term().modes();
         if let Some(bytes) = input::encode(event, self.modifiers, modes) {
             self.session.term().reset_display();
@@ -328,7 +429,13 @@ impl View {
             Ime::Preedit(text, _) => self.preedit = text,
             Ime::Commit(text) => {
                 self.preedit.clear();
-                self.session.send(text.into_bytes());
+                match &mut self.search {
+                    Some(search) => {
+                        search.query.push_str(&text);
+                        self.find();
+                    }
+                    None => self.session.send(text.into_bytes()),
+                }
             }
             Ime::Enabled | Ime::Disabled => self.preedit.clear(),
         }
