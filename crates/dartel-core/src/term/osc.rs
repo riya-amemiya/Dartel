@@ -27,8 +27,8 @@ impl Term {
                 self.outbox.title_changed = true;
             }
             [b"4", pairs @ ..] => {
-                for pair in pairs.chunks_exact(2) {
-                    self.palette_command(pair[0], pair[1], terminator);
+                for &[index, spec] in pairs.as_chunks::<2>().0 {
+                    self.palette_command(index, spec, terminator);
                 }
             }
             [b"10", spec, ..] => {

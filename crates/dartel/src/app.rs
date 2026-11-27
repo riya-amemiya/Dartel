@@ -414,8 +414,7 @@ impl View {
         if let Some(search) = &mut self.search {
             search.matches = Query::regex(&search.query, Case::Smart)
                 .or_else(|_| Query::literal(&search.query, Case::Smart))
-                .map(|query| self.session.term().search(&query, SEARCH_LIMIT))
-                .unwrap_or_default();
+                .map_or_default(|query| self.session.term().search(&query, SEARCH_LIMIT));
             search.current = search.matches.len().saturating_sub(1);
         }
         self.reveal();
