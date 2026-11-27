@@ -51,9 +51,14 @@ jobs:
       - name: Package the macOS app
         if: runner.os == 'macOS'
         run: |
-          mkdir -p Dartel.app/Contents/MacOS
+          mkdir -p Dartel.app/Contents/MacOS Dartel.app/Contents/Resources Dartel.iconset
           cp crates/dartel/macos/Info.plist Dartel.app/Contents/Info.plist
           cp target/${{ matrix.target }}/release/dartel Dartel.app/Contents/MacOS/dartel
+          for size in 16 32 128 256 512; do
+            sips -z "$size" "$size" crates/dartel/macos/icon.png --out "Dartel.iconset/icon_${size}x${size}.png"
+            sips -z "$((size * 2))" "$((size * 2))" crates/dartel/macos/icon.png --out "Dartel.iconset/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns Dartel.iconset -o Dartel.app/Contents/Resources/Dartel.icns
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             plutil -replace CFBundleShortVersionString -string "$GITHUB_REF_NAME" Dartel.app/Contents/Info.plist
             plutil -replace CFBundleVersion -string "$GITHUB_REF_NAME" Dartel.app/Contents/Info.plist

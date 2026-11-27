@@ -56,7 +56,9 @@ Dartel/
 │   │       └── vt_test.rs
 │   └── dartel/               # Binary crate
 │       ├── macos/
-│       │   └── Info.plist    # Bundle metadata for Dartel.app
+│       │   ├── Info.plist    # Bundle metadata for Dartel.app
+│       │   ├── icon.png      # 1024 px rendering of icon.svg, source of Dartel.icns
+│       │   └── icon.svg      # Application icon drawing
 │       └── src/
 │           ├── main.rs       # Event loop start
 │           ├── app.rs        # winit handler, selection, search prompt, shortcuts
@@ -188,6 +190,17 @@ import -window root shot.png
 `xdotool key ctrl+shift+f` opens the search prompt, `ctrl+shift+c` copies the
 selection, and `ctrl+shift+v` pastes. Running on macOS itself, with Metal, the
 system fonts, `pbcopy`, and the IME, cannot be checked this way.
+
+## Application Icon
+
+`crates/dartel/macos/icon.svg` is the drawing. `icon.png` is its 1024 px
+rendering, and the release workflow builds `Dartel.icns` from it. After
+editing the drawing, render it again with headless Chromium so the corners
+stay transparent:
+
+```sh
+chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00000000 --window-size=1024,1024 --screenshot=crates/dartel/macos/icon.png "file://$PWD/crates/dartel/macos/icon.svg"
+```
 
 ## CI/CD Pipeline
 
