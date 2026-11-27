@@ -5,11 +5,11 @@ version.workspace = true
 repository.workspace = true
 
 [dependencies]
-dartel-core.workspace = true
-fontdb.workspace = true
-swash.workspace = true
-unicode-width.workspace = true
-wgpu.workspace = true
+dartel-pty.workspace = true
+dartel-render.workspace = true
+dartel-search.workspace = true
+dartel-term.workspace = true
+dartel-vt.workspace = true
 winit.workspace = true
 
 [lints]

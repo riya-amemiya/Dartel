@@ -1,5 +1,6 @@
+use dartel_vt::{Params, ParamsIter};
+
 use super::{Attrs, Color, Rgb, Style, Term};
-use crate::vt::{Params, ParamsIter};
 
 fn channel(value: u16) -> u8 {
     u8::try_from(value).unwrap_or(u8::MAX)

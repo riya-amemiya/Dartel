@@ -5,9 +5,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
-use dartel_core::pty::{Pty, Size, login_shell};
-use dartel_core::term::Term;
-use dartel_core::vt::Parser;
+use dartel_pty::{Pty, Size, login_shell};
+use dartel_term::Term;
+use dartel_vt::Parser;
 use winit::event_loop::EventLoopProxy;
 
 const HISTORY: usize = 10_000;

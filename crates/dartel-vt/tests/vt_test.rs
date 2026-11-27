@@ -1,4 +1,4 @@
-use dartel_core::vt::{MAX_PARAMS, Params, Parser, Perform};
+use dartel_vt::{MAX_PARAMS, Params, Parser, Perform};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {

@@ -2,9 +2,10 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dartel_core::pty::Size;
-use dartel_core::search::{Case, Query};
-use dartel_core::term::{Modes, Point, Span};
+use dartel_pty::Size;
+use dartel_render::{Gpu, Overlay, Scene};
+use dartel_search::{Case, Query};
+use dartel_term::{Modes, Point, Span};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
@@ -15,9 +16,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{UserAttentionType, Window, WindowAttributes, WindowId};
 
 use crate::clipboard;
-use crate::gpu::Gpu;
 use crate::input;
-use crate::scene::{Overlay, Scene};
 use crate::session::{Session, Signal};
 
 const FONT_SIZE: f64 = 13.0;

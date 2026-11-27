@@ -1,9 +1,9 @@
 mod params;
+pub mod scan;
 mod utf8;
 
 pub use params::{MAX_PARAMS, Params, ParamsIter};
 
-use crate::scan;
 use utf8::Decoded;
 
 pub const MAX_INTERMEDIATES: usize = 2;

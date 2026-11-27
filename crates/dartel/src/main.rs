@@ -1,9 +1,6 @@
 mod app;
 mod clipboard;
-mod font;
-mod gpu;
 mod input;
-mod scene;
 mod session;
 
 use std::error::Error;

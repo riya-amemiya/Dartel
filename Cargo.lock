@@ -376,7 +376,26 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 name = "dartel"
 version = "0.1.0"
 dependencies = [
- "dartel-core",
+ "dartel-pty",
+ "dartel-render",
+ "dartel-search",
+ "dartel-term",
+ "dartel-vt",
+ "winit",
+]
+
+[[package]]
+name = "dartel-pty"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.6",
+]
+
+[[package]]
+name = "dartel-render"
+version = "0.1.0"
+dependencies = [
+ "dartel-term",
  "fontdb",
  "swash",
  "unicode-width",
@@ -385,14 +404,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "dartel-core"
+name = "dartel-search"
 version = "0.1.0"
 dependencies = [
  "memchr",
  "regex",
- "rustix 1.1.6",
+]
+
+[[package]]
+name = "dartel-term"
+version = "0.1.0"
+dependencies = [
+ "dartel-search",
+ "dartel-vt",
  "umt_rust",
  "unicode-width",
+]
+
+[[package]]
+name = "dartel-vt"
+version = "0.1.0"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

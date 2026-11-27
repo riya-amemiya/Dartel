@@ -1,5 +1,5 @@
-use dartel_core::term::{Attrs, Color, CursorShape, Modes, Point, Rgb, Row, Span, Style, Term};
-use dartel_core::vt::Parser;
+use dartel_term::{Attrs, Color, CursorShape, Modes, Point, Rgb, Row, Span, Style, Term};
+use dartel_vt::Parser;
 
 fn term(lines: usize, cols: usize) -> Term {
     Term::new(lines, cols, 100)

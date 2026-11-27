@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use dartel_core::term::{
-    Attrs, Color, CursorShape, Modes, Palette, Rgb, Span, Style, StyleId, Term,
-};
+use dartel_term::{Attrs, Color, CursorShape, Modes, Palette, Rgb, Span, Style, StyleId, Term};
 use unicode_width::UnicodeWidthChar;
 
 use crate::font::{Fonts, Metrics, REGULAR};
@@ -137,6 +135,7 @@ fn centering(span: i32, glyph: Glyph) -> i32 {
 }
 
 impl Scene {
+    #[must_use]
     pub fn new(font_size: f32, padding: i32) -> Option<Scene> {
         Some(Scene {
             fonts: Fonts::new(font_size)?,
@@ -151,6 +150,7 @@ impl Scene {
         })
     }
 
+    #[must_use]
     pub fn metrics(&self) -> Metrics {
         self.fonts.metrics()
     }
@@ -161,6 +161,7 @@ impl Scene {
         self.forget_glyphs();
     }
 
+    #[must_use]
     pub fn grid_size(&self, width: u32, height: u32) -> (usize, usize) {
         let metrics = self.fonts.metrics();
         let cells = |pixels: u32, cell: u32| {
@@ -169,6 +170,7 @@ impl Scene {
         (cells(height, metrics.height), cells(width, metrics.width))
     }
 
+    #[must_use]
     pub fn cell_at(&self, x: f64, y: f64) -> (usize, usize) {
         let metrics = self.fonts.metrics();
         let cell =
@@ -229,10 +231,12 @@ impl Scene {
         Some(glyph)
     }
 
+    #[must_use]
     pub fn quads(&self) -> &[Quad] {
         &self.quads
     }
 
+    #[must_use]
     pub fn cell_origin(&self, line: usize, column: usize) -> (i32, i32) {
         (
             self.padding + column as i32 * self.fonts.metrics().width as i32,

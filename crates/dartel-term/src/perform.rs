@@ -1,8 +1,9 @@
 use std::io::Write;
 
+use dartel_vt::{Params, Perform};
+
 use super::charset::Charset;
 use super::{CursorShape, Modes, Term};
-use crate::vt::{Params, Perform};
 
 fn raw(params: &Params, index: usize) -> u16 {
     params.iter().nth(index).map_or(0, |group| group[0])

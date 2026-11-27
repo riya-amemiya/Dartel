@@ -1,0 +1,16 @@
+[package]
+name = "dartel-render"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dartel-term.workspace = true
+fontdb.workspace = true
+swash.workspace = true
+unicode-width.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

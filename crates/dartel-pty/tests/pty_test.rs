@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use dartel_core::pty::{Pty, Size, login_shell};
+use dartel_pty::{Pty, Size, login_shell};
 
 const SIZE: Size = Size {
     lines: 24,

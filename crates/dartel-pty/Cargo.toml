@@ -1,0 +1,11 @@
+[package]
+name = "dartel-pty"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[lints]
+workspace = true
