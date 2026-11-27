@@ -4,9 +4,19 @@
       <stop offset="0" stop-color="#2B3344"/>
       <stop offset="1" stop-color="#1B202A"/>
     </linearGradient>
+    <linearGradient id="shaft" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8ABEB7" stop-opacity="0"/>
+      <stop offset="1" stop-color="#8ABEB7"/>
+    </linearGradient>
+    <linearGradient id="streak" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#C5C8C6" stop-opacity="0"/>
+      <stop offset="1" stop-color="#C5C8C6" stop-opacity="0.75"/>
+    </linearGradient>
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#body)"/>
   <rect x="103" y="103" width="818" height="818" rx="182" fill="none" stroke="#3A4458" stroke-width="6"/>
-  <path d="M 312 372 L 482 512 L 312 652" fill="none" stroke="#8ABEB7" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="532" y="620" width="200" height="64" rx="32" fill="#C5C8C6"/>
+  <rect x="366" y="386" width="170" height="40" rx="20" fill="url(#streak)"/>
+  <rect x="206" y="484" width="510" height="56" rx="28" fill="url(#shaft)"/>
+  <rect x="296" y="598" width="240" height="40" rx="20" fill="url(#streak)"/>
+  <path d="M 586 352 L 756 512 L 586 672" fill="none" stroke="#8ABEB7" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
