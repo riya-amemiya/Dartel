@@ -1,0 +1,17 @@
+[package]
+name = "dartel-core"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[dependencies]
+memchr.workspace = true
+regex.workspace = true
+umt_rust.workspace = true
+unicode-width.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[lints]
+workspace = true
