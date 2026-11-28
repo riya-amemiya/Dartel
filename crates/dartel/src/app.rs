@@ -384,7 +384,8 @@ impl View {
     }
 
     fn follow(&self) {
-        let target = self.session().term().target_at(self.pointed());
+        let point = self.pointed();
+        let target = self.session().term().target_at(point);
         match target {
             Some(Target::Url(url)) => opener::url(&url),
             Some(Target::Path(path)) => {
