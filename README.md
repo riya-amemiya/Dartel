@@ -38,23 +38,33 @@ On Linux, Dartel needs a Vulkan or OpenGL ES driver, and copy and paste use `wl-
 
 ## Shortcuts
 
-| Action | macOS | Linux |
-| --- | --- | --- |
-| Paste | Command+V | Ctrl+Shift+V |
-| Copy the selection | Command+C | Ctrl+Shift+C |
-| Copy the output of the last command | Command+O | Ctrl+Shift+O |
-| Search scrollback | Command+F | Ctrl+Shift+F |
-| Scroll to the previous or the next prompt | Command+Up, Command+Down | Ctrl+Shift+Up, Ctrl+Shift+Down |
-| Open a tab | Command+T | Ctrl+Shift+T |
-| Close the tab | Command+W | Ctrl+Shift+W |
-| Select one of the first nine tabs | Command+1 to Command+9 | Ctrl+Shift+1 to Ctrl+Shift+9 |
-| Make the font larger or smaller | Command+=, Command+- | Ctrl+Shift+=, Ctrl+Shift+- |
-| Return to the font size of the settings | Command+0 | Ctrl+Shift+0 |
-| Save the settings to a file | Command+S | Ctrl+Shift+S |
-| Load the settings from a file | Command+L | Ctrl+Shift+L |
-| Scroll one page | Shift+PageUp, Shift+PageDown | Shift+PageUp, Shift+PageDown |
-| Open the link, URL, or path under the pointer | Command+click | Ctrl+Shift+click |
-| Select a rectangle | Option+drag | Alt+drag |
+| Action | macOS | Linux | Name in `[keys]` |
+| --- | --- | --- | --- |
+| Paste | Command+V | Ctrl+Shift+V | `paste` |
+| Copy the selection | Command+C | Ctrl+Shift+C | `copy` |
+| Copy the output of the last command | Command+O | Ctrl+Shift+O | `copy-output` |
+| Search scrollback | Command+F | Ctrl+Shift+F | `search` |
+| Scroll to the previous or the next prompt | Command+Up, Command+Down | Ctrl+Shift+Up, Ctrl+Shift+Down | `previous-prompt`, `next-prompt` |
+| Open a tab | Command+T | Ctrl+Shift+T | `new-tab` |
+| Close the tab | Command+W | Ctrl+Shift+W | `close-tab` |
+| Select one of the first nine tabs | Command+1 to Command+9 | Ctrl+Shift+1 to Ctrl+Shift+9 | `tab-1` to `tab-9` |
+| Make the font larger or smaller | Command+=, Command+- | Ctrl+Shift+=, Ctrl+Shift+- | `zoom-in`, `zoom-out` |
+| Return to the font size of the settings | Command+0 | Ctrl+Shift+0 | `zoom-reset` |
+| Save the settings to a file | Command+S | Ctrl+Shift+S | `save-settings` |
+| Load the settings from a file | Command+L | Ctrl+Shift+L | `load-settings` |
+| Scroll one page | Shift+PageUp, Shift+PageDown | Shift+PageUp, Shift+PageDown | `page-up`, `page-down` |
+| Open the link, URL, or path under the pointer | Command+click | Ctrl+Shift+click | |
+| Select a rectangle | Option+drag | Alt+drag | |
+
+The `[keys]` table of the [settings](#settings) changes the keyboard shortcuts, one entry per name in the last column. A value is modifiers and one key joined with `+`, such as `"cmd+shift+c"`, and `""` leaves the action without a shortcut.
+
+- The modifiers are `cmd`, `ctrl`, `shift`, and `alt`. `cmd` is Command on macOS and the Super key on Linux, and `alt` is Option on macOS.
+- The key is one letter, one digit, one ASCII symbol, or one of `up`, `down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`, `enter`, `tab`, `escape`, `space`, `backspace`, `delete`, `insert`, and `f1` to `f12`. The `+` key is written `"cmd++"`. Case does not matter.
+- A shortcut applies while all of its modifiers are held, and other modifiers may be held too. When two shortcuts apply, the one with more modifiers wins.
+- A letter is compared with the character the key types, ignoring case. A digit or a symbol matches the key that carries it on a US layout. A symbol that needs Shift on a US layout, such as `+`, also matches any key that types it. A named key is compared with the key the layout reports.
+- Two actions with the same shortcut stop the load with the line number and both names.
+
+The default of `zoom-in` is written `cmd++` on macOS and `ctrl+shift++` on Linux. It matches the key that carries `=` and `+` on a US layout, and any key that types `+`. A key pressed with Command on macOS, or with Super on Linux, never reaches the shell, even when no shortcut uses it.
 
 While the search prompt is open, Enter moves to the previous match, Shift+Enter moves to the next match, and Escape closes the prompt. A query is a regex, and it is matched as plain text when it does not compile. Matching ignores case unless the query contains an uppercase letter.
 
@@ -150,7 +160,7 @@ dartel config load [FILE]
 
 `FILE` defaults to `$XDG_CONFIG_HOME/dartel/dartel.toml`, or `~/.config/dartel/dartel.toml` when the variable is unset. The kept result lives in `$XDG_STATE_HOME/dartel/settings.bin`, or `~/.local/state/dartel/settings.bin`. Both platforms use these paths.
 
-In the window, Command+S and Command+L on macOS, or Ctrl+Shift+S and Ctrl+Shift+L on Linux, open a prompt with the default path. Enter confirms and Escape cancels. A load in the window applies the font, the padding, and the colors at once. The scrollback limit applies to tabs opened after the load, and the window size applies at the next start.
+In the window, Command+S and Command+L on macOS, or Ctrl+Shift+S and Ctrl+Shift+L on Linux, open a prompt with the default path. Enter confirms and Escape cancels. A load in the window applies the font, the padding, the colors, and the shortcuts at once. The scrollback limit applies to tabs opened after the load, and the window size applies at the next start.
 
 A file may leave out any key, and a missing key keeps its default. An unknown key, a wrong type, or a value outside its range stops the load with the line number, and the kept result stays as it was.
 
@@ -191,6 +201,32 @@ blue = "#7AA6DA"
 magenta = "#C397D8"
 cyan = "#70C0B1"
 white = "#EAEAEA"
+
+[keys]
+paste = "cmd+v"
+copy = "cmd+c"
+copy-output = "cmd+o"
+search = "cmd+f"
+previous-prompt = "cmd+up"
+next-prompt = "cmd+down"
+new-tab = "cmd+t"
+close-tab = "cmd+w"
+tab-1 = "cmd+1"
+tab-2 = "cmd+2"
+tab-3 = "cmd+3"
+tab-4 = "cmd+4"
+tab-5 = "cmd+5"
+tab-6 = "cmd+6"
+tab-7 = "cmd+7"
+tab-8 = "cmd+8"
+tab-9 = "cmd+9"
+zoom-in = "cmd++"
+zoom-out = "cmd+-"
+zoom-reset = "cmd+0"
+save-settings = "cmd+s"
+load-settings = "cmd+l"
+page-up = "shift+pageup"
+page-down = "shift+pagedown"
 ```
 
 | Key | Range | Default |
@@ -202,6 +238,7 @@ white = "#EAEAEA"
 | `window.padding` | 0 to 64 | 4 |
 | `scrollback.lines` | 0 to 1000000 | 10000 |
 | `colors.*` | `#RGB`, `#RRGGBB`, or `#RRGGBBAA` with the alpha ignored | The values above |
+| `keys.*` | A shortcut as described in [Shortcuts](#shortcuts), or `""` for none | The values above on macOS, with `ctrl+shift` in place of `cmd` on Linux |
 
 When the font family is not installed, Dartel uses the first available of Menlo and Monaco on macOS or DejaVu Sans Mono and Liberation Mono on Linux.
 

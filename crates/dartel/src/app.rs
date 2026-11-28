@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::env;
 use std::error::Error;
 use std::io;
@@ -5,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dartel_config::{Config, FONT_SIZE, Locations};
+use dartel_config::{Action, Config, FONT_SIZE, Locations, Named, Shortcut};
 use dartel_pty::Size;
 use dartel_render::{Gpu, Overlay, Scene};
 use dartel_search::{Case, Query};
@@ -16,7 +17,7 @@ use winit::event::{
     ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{UserAttentionType, Window, WindowAttributes, WindowId};
 
 use crate::clipboard;
@@ -30,16 +31,17 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 const BLINK: Duration = Duration::from_millis(500);
 const NOTICE: Duration = Duration::from_secs(4);
 const MULTI_CLICK: Duration = Duration::from_millis(500);
-const TAB_KEYS: [KeyCode; 9] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-    KeyCode::Digit7,
-    KeyCode::Digit8,
-    KeyCode::Digit9,
+const SHIFTED: &str = "!@#$%^&*()_+{}|:\"<>?~";
+const TABS: [Action; 9] = [
+    Action::Tab1,
+    Action::Tab2,
+    Action::Tab3,
+    Action::Tab4,
+    Action::Tab5,
+    Action::Tab6,
+    Action::Tab7,
+    Action::Tab8,
+    Action::Tab9,
 ];
 
 pub struct App {
@@ -154,6 +156,101 @@ fn caption(title: &str) -> &str {
 
 fn label(index: usize, title: &str) -> String {
     format!("{} {title}", index + 1)
+}
+
+fn held(state: ModifiersState) -> dartel_config::Modifiers {
+    [
+        (state.super_key(), dartel_config::Modifiers::CMD),
+        (state.control_key(), dartel_config::Modifiers::CTRL),
+        (state.shift_key(), dartel_config::Modifiers::SHIFT),
+        (state.alt_key(), dartel_config::Modifiers::ALT),
+    ]
+    .into_iter()
+    .filter(|(down, _)| *down)
+    .fold(dartel_config::Modifiers::NONE, |held, (_, modifier)| {
+        held | modifier
+    })
+}
+
+fn us_key(character: char) -> Option<KeyCode> {
+    Some(match character {
+        '1' | '!' => KeyCode::Digit1,
+        '2' | '@' => KeyCode::Digit2,
+        '3' | '#' => KeyCode::Digit3,
+        '4' | '$' => KeyCode::Digit4,
+        '5' | '%' => KeyCode::Digit5,
+        '6' | '^' => KeyCode::Digit6,
+        '7' | '&' => KeyCode::Digit7,
+        '8' | '*' => KeyCode::Digit8,
+        '9' | '(' => KeyCode::Digit9,
+        '0' | ')' => KeyCode::Digit0,
+        '-' | '_' => KeyCode::Minus,
+        '=' | '+' => KeyCode::Equal,
+        '[' | '{' => KeyCode::BracketLeft,
+        ']' | '}' => KeyCode::BracketRight,
+        '\\' | '|' => KeyCode::Backslash,
+        ';' | ':' => KeyCode::Semicolon,
+        '\'' | '"' => KeyCode::Quote,
+        ',' | '<' => KeyCode::Comma,
+        '.' | '>' => KeyCode::Period,
+        '/' | '?' => KeyCode::Slash,
+        '`' | '~' => KeyCode::Backquote,
+        _ => return None,
+    })
+}
+
+fn named(key: Named) -> NamedKey {
+    match key {
+        Named::Up => NamedKey::ArrowUp,
+        Named::Down => NamedKey::ArrowDown,
+        Named::Left => NamedKey::ArrowLeft,
+        Named::Right => NamedKey::ArrowRight,
+        Named::PageUp => NamedKey::PageUp,
+        Named::PageDown => NamedKey::PageDown,
+        Named::Home => NamedKey::Home,
+        Named::End => NamedKey::End,
+        Named::Enter => NamedKey::Enter,
+        Named::Tab => NamedKey::Tab,
+        Named::Escape => NamedKey::Escape,
+        Named::Space => NamedKey::Space,
+        Named::Backspace => NamedKey::Backspace,
+        Named::Delete => NamedKey::Delete,
+        Named::Insert => NamedKey::Insert,
+        Named::F1 => NamedKey::F1,
+        Named::F2 => NamedKey::F2,
+        Named::F3 => NamedKey::F3,
+        Named::F4 => NamedKey::F4,
+        Named::F5 => NamedKey::F5,
+        Named::F6 => NamedKey::F6,
+        Named::F7 => NamedKey::F7,
+        Named::F8 => NamedKey::F8,
+        Named::F9 => NamedKey::F9,
+        Named::F10 => NamedKey::F10,
+        Named::F11 => NamedKey::F11,
+        Named::F12 => NamedKey::F12,
+    }
+}
+
+fn reach(shortcut: Shortcut, event: &KeyEvent) -> Option<bool> {
+    let typed = |character: char| {
+        matches!(&event.logical_key, Key::Character(text)
+            if text.eq_ignore_ascii_case(character.encode_utf8(&mut [0; 4])))
+    };
+    match shortcut.key {
+        dartel_config::Key::Named(key) => {
+            (event.logical_key == Key::Named(named(key))).then_some(false)
+        }
+        dartel_config::Key::Character(character) if character.is_ascii_alphabetic() => {
+            typed(character).then_some(false)
+        }
+        dartel_config::Key::Character(character) => {
+            if us_key(character).is_some_and(|code| event.physical_key == PhysicalKey::Code(code)) {
+                Some(true)
+            } else {
+                (SHIFTED.contains(character) && typed(character)).then_some(false)
+            }
+        }
+    }
 }
 
 impl Transfer {
@@ -924,68 +1021,75 @@ impl View {
         self.arrange();
     }
 
+    fn action(&self, event: &KeyEvent) -> Option<Action> {
+        let held = held(self.modifiers.state());
+        Action::ALL
+            .into_iter()
+            .filter_map(|action| {
+                let shortcut = self.config.keys.get(action)?;
+                let physical = held
+                    .contains(shortcut.modifiers)
+                    .then(|| reach(shortcut, event))??;
+                Some((Reverse(shortcut.modifiers.count()), !physical, action))
+            })
+            .min_by_key(|(count, logical, _)| (*count, *logical))
+            .map(|(_, _, action)| action)
+    }
+
     fn shortcut(&mut self, event: &KeyEvent) -> bool {
-        let state = self.modifiers.state();
-        let command = self.commanding();
-        if command && let PhysicalKey::Code(code) = event.physical_key {
-            let size = match code {
-                KeyCode::Equal => Some(self.config.font_size + 1.0),
-                KeyCode::Minus => Some(self.config.font_size - 1.0),
-                KeyCode::Digit0 => Some(self.base_size),
-                _ => None,
-            };
-            if let Some(size) = size {
-                self.zoom(size);
-                return true;
-            }
-            if let Some(index) = TAB_KEYS.iter().position(|key| *key == code) {
-                if index < self.tabs.len() && index != self.active {
-                    self.leave();
-                    self.select(index);
-                }
-                return true;
-            }
-        }
-        match &event.logical_key {
-            Key::Character(text) if command && text.eq_ignore_ascii_case("v") => self.paste(),
-            Key::Character(text) if command && text.eq_ignore_ascii_case("c") => self.copy(),
-            Key::Character(text) if command && text.eq_ignore_ascii_case("o") => {
-                self.copy_output();
-            }
-            Key::Character(text) if command && text.eq_ignore_ascii_case("w") => {
-                let id = self.session().id();
-                self.close(id);
-            }
-            Key::Character(text) if command && text == "+" => {
-                self.zoom(self.config.font_size + 1.0);
-            }
-            Key::Named(NamedKey::ArrowUp) if command => self.jump(false),
-            Key::Named(NamedKey::ArrowDown) if command => self.jump(true),
-            Key::Character(text) if command && text.eq_ignore_ascii_case("f") => {
+        let Some(action) = self.action(event) else {
+            return self.modifiers.state().super_key();
+        };
+        match action {
+            Action::Paste => self.paste(),
+            Action::Copy => self.copy(),
+            Action::CopyOutput => self.copy_output(),
+            Action::Search => {
                 self.ask = None;
                 self.tabs[self.active].search = Some(Search::default());
                 self.window.request_redraw();
             }
-            Key::Character(text) if command && text.eq_ignore_ascii_case("t") => {
+            Action::PreviousPrompt => self.jump(false),
+            Action::NextPrompt => self.jump(true),
+            Action::NewTab => {
                 if let Err(error) = self.open() {
                     self.notify(format!("a tab could not be opened: {error}"));
                 }
             }
-            Key::Character(text) if command && text.eq_ignore_ascii_case("s") => {
-                self.prompt(Transfer::Save);
+            Action::CloseTab => {
+                let id = self.session().id();
+                self.close(id);
             }
-            Key::Character(text) if command && text.eq_ignore_ascii_case("l") => {
-                self.prompt(Transfer::Load);
+            Action::Tab1
+            | Action::Tab2
+            | Action::Tab3
+            | Action::Tab4
+            | Action::Tab5
+            | Action::Tab6
+            | Action::Tab7
+            | Action::Tab8
+            | Action::Tab9 => {
+                if let Some(index) = TABS.iter().position(|tab| *tab == action)
+                    && index < self.tabs.len()
+                    && index != self.active
+                {
+                    self.leave();
+                    self.select(index);
+                }
             }
-            Key::Named(NamedKey::PageUp) if state.shift_key() => {
+            Action::ZoomIn => self.zoom(self.config.font_size + 1.0),
+            Action::ZoomOut => self.zoom(self.config.font_size - 1.0),
+            Action::ZoomReset => self.zoom(self.base_size),
+            Action::SaveSettings => self.prompt(Transfer::Save),
+            Action::LoadSettings => self.prompt(Transfer::Load),
+            Action::PageUp => {
                 let page = self.session().term().lines() as isize;
                 self.scroll(page);
             }
-            Key::Named(NamedKey::PageDown) if state.shift_key() => {
+            Action::PageDown => {
                 let page = self.session().term().lines() as isize;
                 self.scroll(-page);
             }
-            _ => return state.super_key(),
         }
         true
     }
@@ -1005,6 +1109,7 @@ impl View {
         }
         if !pressed
             && (self.commanding()
+                || self.action(event).is_some()
                 || self.modifiers.state().super_key()
                 || self.ask.is_some()
                 || self.tabs[self.active].search.is_some()

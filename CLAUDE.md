@@ -83,7 +83,7 @@ Dartel/
 │   │       └── pty_test.rs
 │   ├── dartel-config/        # Settings
 │   │   ├── src/
-│   │   │   ├── lib.rs        # Config, TOML and state codecs, locations, save, load
+│   │   │   ├── lib.rs        # Config, shortcuts, TOML and state codecs, locations, save, load
 │   │   │   └── toml.rs       # TOML parser
 │   │   └── tests/
 │   │       ├── config_test.rs
@@ -264,6 +264,11 @@ Build and test for that target run on the macOS CI job.
   state file through `Config::decode`. A change to the fields of `Config`
   changes the layout of the state file, so change the last byte of `MAGIC`
   with it.
+- `Config::keys` holds parsed shortcuts, and no key event parses text. An
+  `Action` has an entry in `ACTION_NAMES`, `Action::ALL`, and `DEFAULT_KEYS`
+  at the same index, and an arm in `View::shortcut`. Adding one changes the
+  layout of the state file. No two actions share a shortcut after a load or a
+  decode.
 
 ## Testing Conventions
 
@@ -312,7 +317,8 @@ selection, `ctrl+shift+v` pastes, `ctrl+shift+t` opens a tab, and
 `ctrl+shift+s` and `ctrl+shift+l` open the settings prompts.
 `ctrl+shift+w` closes the tab, `ctrl+shift+1` selects the first tab,
 `ctrl+shift+equal`, `ctrl+shift+minus`, and `ctrl+shift+0` change the font
-size, and `ctrl+shift+o` copies the last output. Set `HOME` to a
+size, and `ctrl+shift+o` copies the last output. These are the default
+shortcuts, and a loaded `[keys]` table replaces them. Set `HOME` to a
 scratch directory and unset `XDG_CONFIG_HOME` and `XDG_STATE_HOME` for the
 run, so the settings files stay out of the real home directory. Running on
 macOS itself, with Metal, the system fonts, `pbcopy`, and the IME, cannot be
