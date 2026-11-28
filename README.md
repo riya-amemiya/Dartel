@@ -285,6 +285,10 @@ A character that the font family does not have is drawn from the first font in `
 | `TERM` | `xterm-256color` |
 | `COLORTERM` | `truecolor` |
 
+## Crash log
+
+When a thread of the window panics, Dartel appends the panic message, its location, the thread name, and a backtrace to `$XDG_STATE_HOME/dartel/crash.log`, or `~/.local/state/dartel/crash.log` when the variable is unset. Each report starts with the version, the platform, and the Unix time. Attach the reports to a bug report.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) explains the threads, the data structures, and the rendering path with diagrams.

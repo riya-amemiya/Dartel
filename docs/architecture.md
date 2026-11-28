@@ -41,7 +41,7 @@ flowchart TD
 | `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
 | `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, ligatures, emoji sequences, font discovery, shaping, and rasterization, the wgpu surface, the picture textures, and the draw calls |
-| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, windows, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
+| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener`, `crash` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, windows, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, the launch of links, and the crash log |
 
 ## Threads and data flow
 
@@ -111,6 +111,14 @@ sequenceDiagram
 `App` keeps the handle of that thread for the first window. A later window
 starts the thread again before it creates its window. A settings load scans on
 the UI thread, where `View::apply` builds the new `Scene`.
+
+`run` calls `crash::install` before it starts the font scan, so the panic hook
+covers every thread above. A panic appends a report to `crash.log` next to the
+state file, with the version, the platform, the Unix time, the thread name,
+the panic message and location, and a backtrace, and then the previous hook
+prints the message to standard error. A panic on the reader thread leaves the
+tab without output while the window keeps running, and the report still
+names the thread.
 
 ## Windows
 

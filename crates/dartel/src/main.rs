@@ -1,5 +1,6 @@
 mod app;
 mod clipboard;
+mod crash;
 mod input;
 mod opener;
 mod session;
@@ -29,8 +30,11 @@ fn locations() -> Result<Locations, Box<dyn Error>> {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let library = app::scan()?;
     let locations = Locations::from_env();
+    if let Some(locations) = &locations {
+        crash::install(locations.state.with_file_name("crash.log"));
+    }
+    let library = app::scan()?;
     let config = locations
         .as_ref()
         .map_or_default(|locations| dartel_config::active(&locations.state));
