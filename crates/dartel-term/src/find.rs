@@ -17,10 +17,32 @@ pub struct Span {
     pub end: Point,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    Stream(Span),
+    Block(Span),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Url(String),
     Path(String),
+}
+
+impl Span {
+    #[must_use]
+    pub fn block(anchor: Point, head: Point) -> Span {
+        Span {
+            start: Point {
+                line: anchor.line.min(head.line),
+                column: anchor.column.min(head.column),
+            },
+            end: Point {
+                line: anchor.line.max(head.line),
+                column: anchor.column.max(head.column),
+            },
+        }
+    }
 }
 
 #[must_use]
@@ -259,6 +281,44 @@ impl Term {
             }
             if line != span.end.line && !row.is_wrapped() {
                 bytes.push(b'\n');
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[must_use]
+    pub fn block_columns(&self, line: usize, span: Span) -> std::ops::Range<usize> {
+        let cells = self.grid.absolute(line.min(self.grid.total() - 1)).cells();
+        let start = span.start.column
+            - usize::from(
+                span.start.column > 0
+                    && cells
+                        .get(span.start.column)
+                        .is_some_and(|cell| cell.is_spacer()),
+            );
+        let end = (span.end.column
+            + 1
+            + usize::from(
+                cells
+                    .get(span.end.column)
+                    .is_some_and(|cell| cell.is_wide()),
+            ))
+        .min(self.cols());
+        start..end
+    }
+
+    #[must_use]
+    pub fn block_text(&self, span: Span) -> String {
+        let mut bytes = Vec::new();
+        for line in span.start.line..=span.end.line.min(self.grid.total() - 1) {
+            if line != span.start.line {
+                bytes.push(b'\n');
+            }
+            let row = self.grid.absolute(line);
+            let columns = self.block_columns(line, span);
+            let last = columns.end.min(row.occupied());
+            if columns.start < last {
+                push_cells(&mut bytes, row, columns.start..last);
             }
         }
         String::from_utf8_lossy(&bytes).into_owned()
