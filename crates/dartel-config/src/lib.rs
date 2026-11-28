@@ -32,8 +32,8 @@ const NAME_BYTES: RangeInclusive<usize> = 1..=255;
 const SHADES: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
 ];
-const MAGIC: &[u8; 8] = b"DARTEL\x00\x03";
-const ACTIONS: usize = 24;
+const MAGIC: &[u8; 8] = b"DARTEL\x00\x04";
+const ACTIONS: usize = 25;
 const ACTION_NAMES: [&str; ACTIONS] = [
     "paste",
     "copy",
@@ -43,6 +43,7 @@ const ACTION_NAMES: [&str; ACTIONS] = [
     "next-prompt",
     "new-tab",
     "close-tab",
+    "new-window",
     "tab-1",
     "tab-2",
     "tab-3",
@@ -105,6 +106,7 @@ const DEFAULT_KEYS: [Option<Shortcut>; ACTIONS] = [
     Some(primary(Key::Named(Named::Down))),
     Some(primary(Key::Character('t'))),
     Some(primary(Key::Character('w'))),
+    Some(primary(Key::Character('n'))),
     Some(primary(Key::Character('1'))),
     Some(primary(Key::Character('2'))),
     Some(primary(Key::Character('3'))),
@@ -225,6 +227,7 @@ pub enum Action {
     NextPrompt,
     NewTab,
     CloseTab,
+    NewWindow,
     Tab1,
     Tab2,
     Tab3,
@@ -253,6 +256,7 @@ impl Action {
         Action::NextPrompt,
         Action::NewTab,
         Action::CloseTab,
+        Action::NewWindow,
         Action::Tab1,
         Action::Tab2,
         Action::Tab3,

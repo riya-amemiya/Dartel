@@ -3,7 +3,7 @@
 Dartel is a terminal emulator split into eight crates. Six library crates
 turn the bytes a shell writes into terminal state and have no window or GPU
 dependency. `dartel-render` draws that state with the GPU, and the `dartel`
-binary owns the window, the tabs, and the input.
+binary owns the windows, the tabs, and the input.
 
 ## Crates and modules
 
@@ -41,7 +41,7 @@ flowchart TD
 | `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
 | `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, font discovery and rasterization, the wgpu surface, the picture textures, and the draw calls |
-| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
+| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, windows, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
 
 ## Threads and data flow
 
@@ -90,11 +90,55 @@ frame that shows it. The key press requests a frame only when it changes
 something on the UI thread: it clears a selection, returns a scrolled view to
 the bottom, or restarts the blink while the cursor is hidden.
 
+## Windows
+
+`App` holds a list of `View`s, one per window. A `View` owns its window, its
+`Gpu`, its `Scene`, its tabs, and the state of its prompts, notices, IME
+preedit, pointer, and font size, so nothing of one window changes another.
+
+```mermaid
+flowchart TD
+    event["WindowEvent with a WindowId"] --> find["Find the View whose window has the id"]
+    find --> handle["The View handles the event"]
+    signal["Signal Wake or Exit with a session id"] --> locate["Find the View and the tab that hold the session"]
+    locate --> handle
+    handle --> request{"View request set"}
+    request -- "Window" --> create["App creates a View from App config"]
+    request -- "Apply" --> apply["App applies the config to every View and keeps it"]
+    handle --> empty{"Tabs left in the View"}
+    empty -- no --> remove["Remove the View"]
+    remove --> last{"Views left"}
+    last -- no --> quit["Exit the event loop"]
+```
+
+- Session ids come from one `Rc<Cell<u64>>` that `App` hands to every `View`,
+  so an id names one session in the whole process, and `App` finds the tab of
+  a signal by its id across all windows.
+- A `View` cannot reach the event loop or the other windows. A shortcut or a
+  prompt that needs them sets `View::request`, and `App` takes it after the
+  key event.
+- The new-window shortcut requests a window that starts in the directory
+  `View::directory` gives for the active tab, the rule a new tab uses. `App`
+  builds the `View` from its own `Config`, so the window has the size in cells
+  of the settings and the font size of the settings.
+- A settings load requests `Apply` with the loaded `Config`. `App` runs
+  `View::apply` on every window and replaces its own `Config`, which later
+  windows start from.
+- The close request of a window calls `Session::close` for each of its tabs.
+  A window whose last tab closed is removed, and the event loop exits after
+  the last window.
+- Each `Gpu` creates its own wgpu instance, adapter, and device. `Gpu::new`
+  picks the adapter for the surface of its window and builds the pipeline for
+  the format of that surface, and the atlas and the uniform buffer hold the
+  glyphs of one `Scene` and the size of one window.
+- While any window waits for a timer, the event loop wakes at the earliest
+  deadline of all windows and requests a frame from each window that has one.
+
 ## Tabs
 
 One window holds a list of tabs and draws the active one. A tab is a session
 with its own title, selection, and search state. The window, the `Gpu`, and
-the `Scene` are shared by all tabs.
+the `Scene` are shared by all tabs of the window.
 
 ```mermaid
 flowchart TD
@@ -110,11 +154,12 @@ flowchart TD
     exit["Signal Exit with a session id"] --> close["Remove the tab and reap the shell"]
     close --> left{"Tabs left"}
     left -- yes --> active
-    left -- no --> quit["Exit the event loop"]
+    left -- no --> quit["Close the window"]
 ```
 
 - Every session has an id, and `Signal::Wake` and `Signal::Exit` carry it, so
-  a signal finds its tab after other tabs have closed.
+  a signal finds its window and its tab after other tabs and windows have
+  closed.
 - A wake-up from a background tab draws no terminal content. The UI thread
   takes the title change, the clipboard request, and the bell from that `Term`
   and redraws only when the tab label changed.
@@ -143,7 +188,7 @@ decodes without parsing text.
 flowchart LR
     file["TOML file"] -- "load" --> parse["toml parse and Config from_toml"]
     parse --> state["State file, written by Config encode"]
-    parse --> live["Running window, through View apply"]
+    parse --> live["Every running window, through View apply"]
     state -- "start-up, Config decode" --> config["Config"]
     config -- "save, Config to_toml" --> file
 ```
@@ -192,12 +237,13 @@ flowchart LR
 - `save` and `load` are the only writers. The `dartel config save` and
   `dartel config load` subcommands and the two prompts in the window call the
   same functions.
-- A load in the window rebuilds the `Scene` for the font, the fallback fonts,
-  and the padding, sets the palette of every `Term` through
-  `Term::set_palette`, and resizes every session. It replaces `View::config`,
-  and the next key event reads the new shortcuts from it. The scrollback limit
-  applies to tabs opened after the load, and the window size in cells applies
-  at the next start.
+- A load in a window is applied to every window. Each one rebuilds its
+  `Scene` for the font, the fallback fonts, and the padding, sets the palette
+  of every `Term` through `Term::set_palette`, and resizes every session. It
+  replaces `View::config`, and the next key event reads the new shortcuts from
+  it. `App` keeps the loaded `Config` too, so windows opened later use it.
+  The scrollback limit applies to tabs opened after the load, and the window
+  size in cells applies to windows opened after the load.
 
 ## Parsing
 
