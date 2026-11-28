@@ -1,12 +1,12 @@
 #![cfg(unix)]
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 
 use rustix::io::{FdFlags, fcntl_setfd};
@@ -46,6 +46,11 @@ pub struct Pty {
 }
 
 #[must_use]
+pub fn start_directory(home: Option<OsString>) -> Option<PathBuf> {
+    home.map(PathBuf::from).filter(|home| home.is_dir())
+}
+
+#[must_use]
 pub fn login_shell() -> Command {
     let shell = env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
@@ -61,6 +66,9 @@ pub fn login_shell() -> Command {
         ))
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor");
+    if let Some(home) = start_directory(env::var_os("HOME")) {
+        command.current_dir(home);
+    }
     command
 }
 
@@ -109,5 +117,9 @@ impl Pty {
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
+    }
+
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait()
     }
 }
