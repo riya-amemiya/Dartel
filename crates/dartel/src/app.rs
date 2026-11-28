@@ -274,7 +274,9 @@ impl View {
             });
             self.select(self.tabs.len() - 1);
         });
-        self.arrange();
+        if !self.tabs.is_empty() {
+            self.arrange();
+        }
         opened
     }
 
