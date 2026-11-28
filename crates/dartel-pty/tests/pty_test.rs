@@ -75,6 +75,13 @@ fn child_owns_a_controlling_terminal() {
 }
 
 #[test]
+fn child_owns_a_controlling_terminal_when_the_caller_leads_a_session_without_one() {
+    let _ = rustix::process::setsid();
+    let pty = Pty::spawn(shell("tty; printf done"), SIZE).unwrap();
+    assert!(read_until(&mut pty.reader().unwrap(), "done").contains("/dev/"));
+}
+
+#[test]
 fn try_wait_reports_the_exit_status() {
     let mut pty = Pty::spawn(shell("exit 3"), SIZE).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);

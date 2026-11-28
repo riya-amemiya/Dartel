@@ -5,6 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
@@ -89,6 +90,7 @@ impl Pty {
         let slave = OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(OpenptFlags::NOCTTY.bits() as i32)
             .open(OsStr::from_bytes(ptsname(&master, Vec::new())?.as_bytes()))?;
         tcsetwinsize(&slave, size.into())?;
         let mut attributes = tcgetattr(&slave)?;
