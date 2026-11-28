@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/dartel",
+    "crates/dartel-config",
     "crates/dartel-pty",
     "crates/dartel-render",
     "crates/dartel-search",
@@ -15,6 +16,7 @@ version = "0.1.0"
 repository = "https://github.com/riya-amemiya/Dartel"
 
 [workspace.dependencies]
+dartel-config = { path = "crates/dartel-config" }
 dartel-pty = { path = "crates/dartel-pty" }
 dartel-render = { path = "crates/dartel-render" }
 dartel-search = { path = "crates/dartel-search" }
