@@ -307,7 +307,9 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
 - `dependabot.yml` opens weekly grouped updates for cargo and GitHub Actions.
 - `.mergify.yml` protects `main` and queues squash merges. Both wait for the
   four `static-check.yml` jobs and the two CodeQL `Analyze` jobs. A CI job
-  that should gate merging needs its check name added there.
+  that should gate merging needs its check name added there. A pull request
+  that someone other than `riya-amemiya` opened also waits for an approving
+  review from `riya-amemiya`.
 
 ## Dependencies
 

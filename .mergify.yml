@@ -17,6 +17,11 @@ merge_protections:
       - base = main
     success_conditions:
       - and: *ci_checks
+  - name: Maintainer review
+    if:
+      - author != riya-amemiya
+    success_conditions:
+      - approved-reviews-by = riya-amemiya
 
 queue_rules:
   - name: default
