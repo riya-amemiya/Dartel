@@ -459,6 +459,7 @@ impl Term {
         }
         std::mem::swap(&mut self.grid, &mut self.inactive);
         std::mem::swap(&mut self.saved, &mut self.inactive_saved);
+        std::mem::swap(&mut self.keyboard, &mut self.inactive_keyboard);
         self.modes.set(Modes::ALTERNATE, enable);
         if enable && clear {
             let blank = self.blank();

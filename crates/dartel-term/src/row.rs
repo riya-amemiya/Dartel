@@ -5,11 +5,16 @@ use super::style::StyleId;
 
 const MAX_MARKS: usize = 8;
 
+pub(super) const PROMPT: u8 = 1;
+pub(super) const OUTPUT: u8 = 1 << 1;
+pub(super) const FAILED: u8 = 1 << 2;
+
 #[derive(Clone, Debug)]
 pub struct Row {
     cells: Vec<Cell>,
     marks: Vec<(u16, char)>,
     wrapped: bool,
+    tags: u8,
 }
 
 impl Row {
@@ -18,6 +23,7 @@ impl Row {
             cells: vec![blank; cols],
             marks: Vec::new(),
             wrapped: false,
+            tags: 0,
         }
     }
 
@@ -27,11 +33,13 @@ impl Row {
         cols: usize,
         blank: Cell,
         wrapped: bool,
+        tags: u8,
     ) -> Row {
         let mut row = Row {
             cells: cells.to_vec(),
             marks: marks.collect(),
             wrapped,
+            tags,
         };
         row.cells.resize(cols, blank);
         row
@@ -74,6 +82,34 @@ impl Row {
         self.wrapped = wrapped;
     }
 
+    #[inline]
+    #[must_use]
+    pub fn is_prompt(&self) -> bool {
+        self.tags & PROMPT != 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_output(&self) -> bool {
+        self.tags & OUTPUT != 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        self.tags & FAILED != 0
+    }
+
+    #[inline]
+    pub(super) fn tags(&self) -> u8 {
+        self.tags
+    }
+
+    #[inline]
+    pub(super) fn tag(&mut self, tags: u8) {
+        self.tags |= tags;
+    }
+
     pub fn marks(&self, column: usize) -> impl Iterator<Item = char> + '_ {
         self.marks
             .iter()
@@ -95,6 +131,7 @@ impl Row {
         self.cells.resize(cols, blank);
         self.marks.clear();
         self.wrapped = false;
+        self.tags = 0;
     }
 
     pub(super) fn resize(&mut self, cols: usize, blank: Cell) {

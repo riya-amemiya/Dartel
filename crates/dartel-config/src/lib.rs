@@ -17,7 +17,7 @@ const FONT_FAMILY: &str = "Menlo";
 #[cfg(not(target_os = "macos"))]
 const FONT_FAMILY: &str = "DejaVu Sans Mono";
 
-const FONT_SIZE: RangeInclusive<f64> = 4.0..=96.0;
+pub const FONT_SIZE: RangeInclusive<f64> = 4.0..=96.0;
 const PADDING: RangeInclusive<f64> = 0.0..=64.0;
 const COLUMNS: RangeInclusive<i64> = 2..=1000;
 const LINES: RangeInclusive<i64> = 1..=1000;

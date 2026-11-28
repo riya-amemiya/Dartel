@@ -3,6 +3,7 @@ mod charset;
 mod color;
 mod find;
 mod grid;
+pub mod keys;
 mod modes;
 mod osc;
 mod perform;
@@ -13,17 +14,23 @@ mod style;
 
 pub use cell::Cell;
 pub use color::{Color, Palette, Rgb};
-pub use find::{Point, Span};
+pub use find::{Point, Span, Target, path_candidate};
 pub use grid::Grid;
 pub use modes::Modes;
 pub use row::Row;
 pub use style::{Attrs, Style, StyleId};
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use charset::Charset;
 use style::StyleTable;
 
 const MAX_SIZE: usize = (u16::MAX / 2) as usize;
 const TAB_STOP: usize = 8;
+const MAX_LINK_BYTES: usize = 4096;
+const MAX_KEYBOARD_STACK: usize = 16;
+const KEYBOARD_FLAGS: u16 = 0b1_1111;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CursorShape {
@@ -123,6 +130,11 @@ pub struct Term {
     last_char: Option<char>,
     cursor_shape: CursorShape,
     title: String,
+    directory: Option<(String, String)>,
+    links: Vec<Arc<str>>,
+    link_ids: HashMap<Arc<str>, u16>,
+    keyboard: Vec<u8>,
+    inactive_keyboard: Vec<u8>,
     outbox: Outbox,
     damage: Damage,
     display_offset: usize,
@@ -162,6 +174,11 @@ impl Term {
             last_char: None,
             cursor_shape: CursorShape::default(),
             title: String::new(),
+            directory: None,
+            links: Vec::new(),
+            link_ids: HashMap::new(),
+            keyboard: Vec::new(),
+            inactive_keyboard: Vec::new(),
             outbox: Outbox::default(),
             damage: Damage::new(lines),
             display_offset: 0,
@@ -273,6 +290,26 @@ impl Term {
     #[must_use]
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    #[must_use]
+    pub fn directory(&self) -> Option<(&str, &str)> {
+        self.directory
+            .as_ref()
+            .map(|(host, path)| (host.as_str(), path.as_str()))
+    }
+
+    #[must_use]
+    pub fn link(&self, id: u16) -> Option<&str> {
+        id.checked_sub(1)
+            .and_then(|index| self.links.get(usize::from(index)))
+            .map(|link| &**link)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn keyboard(&self) -> u8 {
+        self.keyboard.last().copied().unwrap_or(0)
     }
 
     pub fn take_title_change(&mut self) -> bool {

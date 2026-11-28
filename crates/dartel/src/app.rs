@@ -5,22 +5,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dartel_config::{Config, Locations};
+use dartel_config::{Config, FONT_SIZE, Locations};
 use dartel_pty::Size;
 use dartel_render::{Gpu, Overlay, Scene};
 use dartel_search::{Case, Query};
-use dartel_term::{Modes, Point, Span};
+use dartel_term::{Modes, Point, Span, Target};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
     ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{UserAttentionType, Window, WindowAttributes, WindowId};
 
 use crate::clipboard;
 use crate::input;
+use crate::opener;
 use crate::session::{Session, Signal};
 
 const WHEEL_LINES: f64 = 3.0;
@@ -28,6 +29,18 @@ const SEARCH_LIMIT: usize = 10_000;
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 const BLINK: Duration = Duration::from_millis(500);
 const NOTICE: Duration = Duration::from_secs(4);
+const MULTI_CLICK: Duration = Duration::from_millis(500);
+const TAB_KEYS: [KeyCode; 9] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
+];
 
 pub struct App {
     proxy: EventLoopProxy<Signal>,
@@ -71,6 +84,8 @@ struct View {
     config: Config,
     locations: Option<Locations>,
     home: Option<PathBuf>,
+    host: String,
+    base_size: f64,
     size: PhysicalSize<u32>,
     tabs: Vec<Tab>,
     labels: Vec<String>,
@@ -89,6 +104,7 @@ struct View {
     blink: Instant,
     blinking: bool,
     caret: Option<(usize, usize)>,
+    clicks: Option<(Instant, Point, u8)>,
 }
 
 #[cfg(target_os = "macos")]
@@ -152,6 +168,13 @@ impl App {
             view: None,
         }
     }
+
+    fn finish(&mut self, event_loop: &ActiveEventLoop) {
+        if self.view.as_ref().is_some_and(|view| view.tabs.is_empty()) {
+            self.view = None;
+            event_loop.exit();
+        }
+    }
 }
 
 impl View {
@@ -179,9 +202,11 @@ impl View {
             gpu,
             scene,
             proxy,
+            base_size: config.font_size,
             config,
             locations,
             home: env::var_os("HOME").map(PathBuf::from),
+            host: dartel_pty::host_name(),
             size,
             tabs: Vec::new(),
             labels: Vec::new(),
@@ -200,6 +225,7 @@ impl View {
             blink: Instant::now(),
             blinking: false,
             caret: None,
+            clicks: None,
         };
         view.open()?;
         Ok(view)
@@ -209,11 +235,21 @@ impl View {
         &self.tabs[self.active].session
     }
 
+    fn directory(&self) -> Option<PathBuf> {
+        let term = self.tabs.get(self.active)?.session.term();
+        term.directory()
+            .filter(|(host, _)| {
+                host.is_empty() || *host == "localhost" || host.eq_ignore_ascii_case(&self.host)
+            })
+            .map(|(_, path)| PathBuf::from(path))
+    }
+
     fn open(&mut self) -> io::Result<()> {
         self.scene.show_tabs(!self.tabs.is_empty());
         let opened = Session::spawn(
             self.spawned,
             pty_size(&self.scene, self.size),
+            self.directory(),
             self.config.palette(),
             self.config.scrollback as usize,
             self.proxy.clone(),
@@ -298,13 +334,13 @@ impl View {
         self.deliver(clipboard, bell);
     }
 
-    fn close(&mut self, id: u64) -> bool {
+    fn close(&mut self, id: u64) {
         let Some(index) = self.tabs.iter().position(|tab| tab.session.id() == id) else {
-            return true;
+            return;
         };
         self.tabs.remove(index).session.close();
         if self.tabs.is_empty() {
-            return false;
+            return;
         }
         if index == self.active {
             self.select(index.min(self.tabs.len() - 1));
@@ -312,7 +348,78 @@ impl View {
             self.active -= 1;
         }
         self.arrange();
-        true
+    }
+
+    fn zoom(&mut self, size: f64) {
+        self.config.font_size = size.clamp(*FONT_SIZE.start(), *FONT_SIZE.end());
+        self.caret = None;
+        self.rescale(self.window.scale_factor());
+    }
+
+    fn jump(&self, forward: bool) {
+        let mut term = self.session().term();
+        let first = term.grid().history() - term.display_offset();
+        let prompt = if forward {
+            term.prompt_after(first)
+        } else {
+            term.prompt_before(first)
+        };
+        if forward || prompt.is_some() {
+            let delta = prompt.map_or(0, |line| term.grid().history().saturating_sub(line))
+                as isize
+                - term.display_offset() as isize;
+            term.scroll_display(delta);
+        }
+        self.window.request_redraw();
+    }
+
+    fn copy_output(&self) {
+        let output = {
+            let term = self.session().term();
+            term.last_output().map(|span| term.text(span))
+        };
+        if let Some(text) = output {
+            clipboard::write(text.trim_end());
+        }
+    }
+
+    fn follow(&self) {
+        let target = self.session().term().target_at(self.pointed());
+        match target {
+            Some(Target::Url(url)) => opener::url(&url),
+            Some(Target::Path(path)) => {
+                opener::path(&path, self.directory().as_deref(), self.home.as_deref());
+            }
+            None => {}
+        }
+    }
+
+    fn click(&mut self) {
+        let point = self.pointed();
+        let count = match self.clicks {
+            Some((at, last, count)) if at.elapsed() < MULTI_CLICK && last == point && count < 3 => {
+                count + 1
+            }
+            _ => 1,
+        };
+        self.clicks = Some((Instant::now(), point, count));
+        let tab = &mut self.tabs[self.active];
+        tab.selection = match count {
+            2 => tab.session.term().word_at(point),
+            3 => Some(tab.session.term().line_at(point)),
+            _ => None,
+        };
+        tab.anchor = (count == 1).then_some(point);
+        self.window.request_redraw();
+    }
+
+    fn commanding(&self) -> bool {
+        let state = self.modifiers.state();
+        if cfg!(target_os = "macos") {
+            state.super_key()
+        } else {
+            state.control_key() && state.shift_key()
+        }
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -541,13 +648,16 @@ impl View {
         if swallowed && state == ElementState::Released {
             return;
         }
+        if button == MouseButton::Left && state == ElementState::Pressed && self.commanding() {
+            self.swallowed |= 1;
+            self.follow();
+            return;
+        }
         if let Some(modes) = self.reporting() {
             self.pressed = (state == ElementState::Pressed).then_some(code);
             self.report(modes, code, state == ElementState::Released);
         } else if button == MouseButton::Left && state == ElementState::Pressed {
-            self.tabs[self.active].anchor = Some(self.pointed());
-            self.tabs[self.active].selection = None;
-            self.window.request_redraw();
+            self.click();
         } else if button == MouseButton::Left {
             self.tabs[self.active].anchor = None;
         }
@@ -783,6 +893,7 @@ impl View {
         for tab in &self.tabs {
             tab.session.term().set_palette(config.palette());
         }
+        self.base_size = config.font_size;
         self.config = config;
         self.caret = None;
         self.arrange();
@@ -790,14 +901,41 @@ impl View {
 
     fn shortcut(&mut self, event: &KeyEvent) -> bool {
         let state = self.modifiers.state();
-        let command = if cfg!(target_os = "macos") {
-            state.super_key()
-        } else {
-            state.control_key() && state.shift_key()
-        };
+        let command = self.commanding();
+        if command && let PhysicalKey::Code(code) = event.physical_key {
+            let size = match code {
+                KeyCode::Equal => Some(self.config.font_size + 1.0),
+                KeyCode::Minus => Some(self.config.font_size - 1.0),
+                KeyCode::Digit0 => Some(self.base_size),
+                _ => None,
+            };
+            if let Some(size) = size {
+                self.zoom(size);
+                return true;
+            }
+            if let Some(index) = TAB_KEYS.iter().position(|key| *key == code) {
+                if index < self.tabs.len() && index != self.active {
+                    self.leave();
+                    self.select(index);
+                }
+                return true;
+            }
+        }
         match &event.logical_key {
             Key::Character(text) if command && text.eq_ignore_ascii_case("v") => self.paste(),
             Key::Character(text) if command && text.eq_ignore_ascii_case("c") => self.copy(),
+            Key::Character(text) if command && text.eq_ignore_ascii_case("o") => {
+                self.copy_output();
+            }
+            Key::Character(text) if command && text.eq_ignore_ascii_case("w") => {
+                let id = self.session().id();
+                self.close(id);
+            }
+            Key::Character(text) if command && text == "+" => {
+                self.zoom(self.config.font_size + 1.0);
+            }
+            Key::Named(NamedKey::ArrowUp) if command => self.jump(false),
+            Key::Named(NamedKey::ArrowDown) if command => self.jump(true),
             Key::Character(text) if command && text.eq_ignore_ascii_case("f") => {
                 self.ask = None;
                 self.tabs[self.active].search = Some(Search::default());
@@ -828,22 +966,37 @@ impl View {
     }
 
     fn key(&mut self, event: &KeyEvent) {
-        if self.shortcut(event) || !self.preedit.is_empty() {
+        let pressed = event.state == ElementState::Pressed;
+        if pressed && (self.shortcut(event) || !self.preedit.is_empty()) {
             return;
         }
-        if self.ask.is_some() {
+        if pressed && self.ask.is_some() {
             self.ask_key(event);
             return;
         }
-        if self.tabs[self.active].search.is_some() {
+        if pressed && self.tabs[self.active].search.is_some() {
             self.search_key(event);
             return;
         }
-        let modes = self.session().term().modes();
-        if let Some(bytes) = input::encode(event, self.modifiers, modes) {
-            self.session().term().reset_display();
-            self.tabs[self.active].selection = None;
-            self.blink = Instant::now();
+        if !pressed
+            && (self.commanding()
+                || self.modifiers.state().super_key()
+                || self.ask.is_some()
+                || self.tabs[self.active].search.is_some()
+                || !self.preedit.is_empty())
+        {
+            return;
+        }
+        let (modes, keyboard) = {
+            let term = self.session().term();
+            (term.modes(), term.keyboard())
+        };
+        if let Some(bytes) = input::encode(event, self.modifiers, modes, keyboard) {
+            if pressed {
+                self.session().term().reset_display();
+                self.tabs[self.active].selection = None;
+                self.blink = Instant::now();
+            }
             self.session().send(bytes);
             self.window.request_redraw();
         }
@@ -902,12 +1055,9 @@ impl ApplicationHandler<Signal> for App {
         };
         match signal {
             Signal::Wake(id) => view.wake(id),
-            Signal::Exit(id) => {
-                if !view.close(id) {
-                    event_loop.exit();
-                }
-            }
+            Signal::Exit(id) => view.close(id),
         }
+        self.finish(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -921,15 +1071,14 @@ impl ApplicationHandler<Signal> for App {
             WindowEvent::RedrawRequested => view.redraw(),
             WindowEvent::Focused(focused) => view.focus(focused),
             WindowEvent::ModifiersChanged(modifiers) => view.modifiers = modifiers,
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                view.key(&event);
-            }
+            WindowEvent::KeyboardInput { event, .. } => view.key(&event),
             WindowEvent::Ime(ime) => view.ime(ime),
             WindowEvent::MouseWheel { delta, .. } => view.wheel(delta),
             WindowEvent::CursorMoved { position, .. } => view.point(position),
             WindowEvent::MouseInput { state, button, .. } => view.press(button, state),
             _ => {}
         }
+        self.finish(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

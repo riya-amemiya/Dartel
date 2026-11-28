@@ -3,11 +3,12 @@
 use std::env;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use dartel_pty::{Pty, Size, login_shell, start_directory};
+use dartel_pty::{Pty, Size, host_name, login_shell, start_directory};
 
 const SIZE: Size = Size {
     lines: 24,
@@ -100,7 +101,7 @@ fn spawn_fails_for_a_missing_program() {
 
 #[test]
 fn login_shell_sets_the_terminal_environment() {
-    let command = login_shell();
+    let command = login_shell(None);
     let variable = |name: &str| {
         command
             .get_envs()
@@ -142,9 +143,41 @@ fn start_directory_is_absent_when_home_is_not_a_directory() {
 #[test]
 fn login_shell_starts_in_the_home_directory() {
     assert_eq!(
-        login_shell().get_current_dir().map(Path::to_path_buf),
+        login_shell(None).get_current_dir().map(Path::to_path_buf),
         start_directory(env::var_os("HOME"))
     );
+}
+
+#[test]
+fn login_shell_starts_in_the_given_directory() {
+    assert_eq!(
+        login_shell(Some(env::temp_dir()))
+            .get_current_dir()
+            .map(Path::to_path_buf),
+        Some(env::temp_dir())
+    );
+}
+
+#[test]
+fn login_shell_falls_back_to_home_for_a_missing_directory() {
+    assert_eq!(
+        login_shell(Some("/nonexistent/dartel-directory".into()))
+            .get_current_dir()
+            .map(Path::to_path_buf),
+        start_directory(env::var_os("HOME"))
+    );
+}
+
+#[test]
+fn host_name_is_not_empty() {
+    assert_ne!(host_name(), "");
+}
+
+#[test]
+fn hangup_ends_the_child_with_a_signal() {
+    let mut pty = Pty::spawn(shell("sleep 30"), SIZE).unwrap();
+    pty.hangup().unwrap();
+    assert_eq!(pty.wait().unwrap().signal(), Some(1));
 }
 
 #[test]
@@ -157,7 +190,7 @@ fn spawned_child_runs_in_the_command_directory() {
 
 #[test]
 fn login_shell_starts_with_a_dash_prefixed_name() {
-    let mut command = login_shell();
+    let mut command = login_shell(None);
     let name = Path::new(command.get_program())
         .file_name()
         .unwrap()

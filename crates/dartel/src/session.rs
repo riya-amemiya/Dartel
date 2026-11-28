@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -73,11 +74,12 @@ impl Session {
     pub fn spawn(
         id: u64,
         size: Size,
+        directory: Option<PathBuf>,
         palette: Palette,
         history: usize,
         proxy: EventLoopProxy<Signal>,
     ) -> io::Result<Session> {
-        let pty = Pty::spawn(login_shell(), size)?;
+        let pty = Pty::spawn(login_shell(directory), size)?;
         let shared = Arc::new(Shared {
             term: Mutex::new(Term::with_palette(
                 usize::from(size.lines),
@@ -141,6 +143,7 @@ impl Session {
 
     pub fn close(mut self) {
         if !matches!(self.pty.try_wait(), Ok(Some(_))) {
+            let _ = self.pty.hangup();
             let _ = thread::Builder::new()
                 .name("dartel-reap".into())
                 .spawn(move || self.pty.wait());

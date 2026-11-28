@@ -105,11 +105,15 @@ fn look(style: Style, palette: &Palette, reverse: bool) -> Look {
     } else {
         ink
     };
+    let mut attrs = style.attrs;
+    if style.link != 0 && !attrs.contains(Attrs::ANY_UNDERLINE) {
+        attrs.set(Attrs::UNDERLINE, true);
+    }
     Look {
         foreground: ink,
         background: (inverse || style.background != Color::Default).then_some(paper),
         underline: palette.resolve(style.underline, ink),
-        attrs: style.attrs,
+        attrs,
         face: usize::from(style.attrs.contains(Attrs::BOLD))
             + 2 * usize::from(style.attrs.contains(Attrs::ITALIC)),
     }
@@ -544,6 +548,16 @@ impl Scene {
                 (term.cols() - start) as i32 * width,
                 height,
                 color,
+                u8::MAX,
+            ));
+        }
+        if source.is_failed() {
+            row.backgrounds.push(solid(
+                (self.padding - 2 * metrics.stroke as i32).max(0),
+                top,
+                2 * metrics.stroke as i32,
+                height,
+                term.palette().indexed(9),
                 u8::MAX,
             ));
         }

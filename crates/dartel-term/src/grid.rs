@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use super::cell::Cell;
-use super::row::Row;
+use super::row::{PROMPT, Row};
 
 #[derive(Clone, Debug)]
 pub struct Grid {
@@ -121,6 +121,16 @@ impl Grid {
         }
     }
 
+    pub(super) fn tag_prompt(&mut self, line: usize, tags: u8) -> bool {
+        let found = (0..=self.history() + line)
+            .rev()
+            .find(|&index| self.rows[index].tags() & PROMPT != 0);
+        if let Some(index) = found {
+            self.rows[index].tag(tags);
+        }
+        found.is_some()
+    }
+
     pub(super) fn clear(&mut self, blank: Cell) {
         let base = self.history();
         for row in self.rows.range_mut(base..) {
@@ -181,8 +191,10 @@ impl Grid {
         let mut marks = Vec::new();
         let mut offset = None;
         let mut placed = (0, 0);
+        let mut tags = 0;
         for (index, row) in std::mem::take(&mut self.rows).into_iter().enumerate() {
             let wrapped = row.is_wrapped();
+            tags |= row.tags();
             let keep = if index == target {
                 offset = Some(cells.len() + cursor.1);
                 row.occupied().max(cursor.1)
@@ -191,14 +203,15 @@ impl Grid {
             };
             row.unload(keep, &mut cells, &mut marks);
             if !wrapped {
-                placed =
-                    split(&mut rows, &cells, &marks, cols, blank, offset.take()).unwrap_or(placed);
+                placed = split(&mut rows, &cells, &marks, cols, blank, offset.take(), tags)
+                    .unwrap_or(placed);
                 cells.clear();
                 marks.clear();
+                tags = 0;
             }
         }
         if !cells.is_empty() || offset.is_some() {
-            placed = split(&mut rows, &cells, &marks, cols, blank, offset).unwrap_or(placed);
+            placed = split(&mut rows, &cells, &marks, cols, blank, offset, tags).unwrap_or(placed);
         }
         rows.extend((rows.len()..self.lines).map(|_| Row::new(cols, blank)));
         let dropped = (rows.len() - self.lines).saturating_sub(self.history_limit);
@@ -223,6 +236,7 @@ fn split(
     cols: usize,
     blank: Cell,
     cursor: Option<usize>,
+    tags: u8,
 ) -> Option<(usize, usize)> {
     let mut start = 0;
     let mut placed = None;
@@ -243,6 +257,7 @@ fn split(
             cols,
             blank,
             end < cells.len(),
+            if start == 0 { tags } else { 0 },
         ));
         if end == cells.len() {
             return placed;

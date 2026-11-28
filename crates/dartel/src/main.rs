@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod input;
+mod opener;
 mod session;
 
 use std::env;

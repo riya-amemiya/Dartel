@@ -3,7 +3,7 @@ use std::io::Write;
 use dartel_vt::{Params, Perform};
 
 use super::charset::Charset;
-use super::{CursorShape, Modes, Term};
+use super::{CursorShape, KEYBOARD_FLAGS, MAX_KEYBOARD_STACK, Modes, Term};
 
 fn raw(params: &Params, index: usize) -> u16 {
     params.iter().nth(index).map_or(0, |group| group[0])
@@ -142,6 +142,23 @@ impl Perform for Term {
                 }
             }
             ([], b'u') => self.restore_cursor(),
+            ([b'>'], b'u') => {
+                if self.keyboard.len() == MAX_KEYBOARD_STACK {
+                    self.keyboard.remove(0);
+                }
+                self.keyboard.push((raw(params, 0) & KEYBOARD_FLAGS) as u8);
+            }
+            ([b'<'], b'u') => {
+                self.keyboard
+                    .truncate(self.keyboard.len().saturating_sub(count(params, 0)));
+            }
+            ([b'='], b'u') => self.set_keyboard(
+                (raw(params, 0) & KEYBOARD_FLAGS) as u8,
+                raw(params, 1).max(1),
+            ),
+            ([b'?'], b'u') => {
+                let _ = write!(self.outbox.reply, "\x1b[?{}u", self.keyboard());
+            }
             _ => {}
         }
     }
@@ -219,6 +236,19 @@ impl Term {
             "\x1b[?{mode};{}$y",
             Modes::private(mode).map_or(0, |flag| 2 - u8::from(self.modes.contains(flag)))
         );
+    }
+
+    fn set_keyboard(&mut self, flags: u8, mode: u16) {
+        let next = match mode {
+            1 => flags,
+            2 => self.keyboard() | flags,
+            3 => self.keyboard() & !flags,
+            _ => return,
+        };
+        match self.keyboard.last_mut() {
+            Some(current) => *current = next,
+            None => self.keyboard.push(next),
+        }
     }
 
     fn set_cursor_style(&mut self, style: u16) {

@@ -56,6 +56,13 @@ fn reply(term: &mut Term) -> String {
     String::from_utf8(term.take_reply()).unwrap()
 }
 
+fn marks(term: &Term) -> Vec<(bool, bool, bool)> {
+    term.grid()
+        .rows()
+        .map(|row| (row.is_prompt(), row.is_output(), row.is_failed()))
+        .collect()
+}
+
 #[test]
 fn prints_text_and_advances_the_cursor() {
     let term = fed(3, 10, "abc");
@@ -1000,4 +1007,322 @@ fn text_joins_wrapped_rows_and_breaks_unwrapped_ones() {
         }),
         "bcdef\ng"
     );
+}
+
+#[test]
+fn directory_is_unknown_before_osc_7() {
+    assert_eq!(term(1, 5).directory(), None);
+}
+
+#[test]
+fn osc_7_records_the_host_and_the_directory() {
+    let term = fed(1, 5, "\x1b]7;file://box/home/u/src\x07");
+    assert_eq!(term.directory(), Some(("box", "/home/u/src")));
+}
+
+#[test]
+fn osc_7_accepts_an_empty_host() {
+    let term = fed(1, 5, "\x1b]7;file:///tmp\x1b\\");
+    assert_eq!(term.directory(), Some(("", "/tmp")));
+}
+
+#[test]
+fn osc_7_decodes_percent_escapes() {
+    let term = fed(1, 5, "\x1b]7;file://box/a%20b/%E3%81%82%3Bc\x07");
+    assert_eq!(term.directory(), Some(("box", "/a b/\u{3042};c")));
+}
+
+#[test]
+fn osc_7_keeps_a_malformed_percent_escape() {
+    let term = fed(1, 5, "\x1b]7;file://box/a%2/b%zz/c%\x07");
+    assert_eq!(term.directory(), Some(("box", "/a%2/b%zz/c%")));
+}
+
+#[test]
+fn osc_7_keeps_a_semicolon_in_the_path() {
+    let term = fed(1, 5, "\x1b]7;file://box/a;b\x07");
+    assert_eq!(term.directory(), Some(("box", "/a;b")));
+}
+
+#[test]
+fn osc_7_ignores_other_schemes_and_a_missing_path() {
+    let term = fed(
+        1,
+        5,
+        "\x1b]7;file://box/first\x07\x1b]7;https://box/x\x07\x1b]7;file://box\x07",
+    );
+    assert_eq!(term.directory(), Some(("box", "/first")));
+}
+
+#[test]
+fn osc_133_marks_the_prompt_and_output_rows() {
+    let term = fed(
+        4,
+        10,
+        "\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07",
+    );
+    assert_eq!(
+        marks(&term),
+        [
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+            (false, false, false)
+        ]
+    );
+}
+
+#[test]
+fn osc_133_d_with_a_nonzero_code_marks_the_prompt_as_failed() {
+    let term = fed(
+        4,
+        10,
+        "\x1b]133;A\x07$ x\r\n\x1b]133;C\x07err\r\n\x1b]133;D;127\x07",
+    );
+    assert_eq!(marks(&term)[0], (true, false, true));
+}
+
+#[test]
+fn osc_133_d_without_a_numeric_code_marks_nothing() {
+    let term = fed(
+        4,
+        10,
+        "\x1b]133;A\x07$ x\r\n\x1b]133;D\x07\x1b]133;D;abc\x07",
+    );
+    assert_eq!(marks(&term)[0], (true, false, false));
+}
+
+#[test]
+fn osc_133_d_without_a_prompt_marks_nothing() {
+    let mut term = term(2, 10);
+    term.reset_damage();
+    feed(&mut term, "\x1b]133;D;1\x07");
+    assert_eq!(marks(&term), [(false, false, false); 2]);
+    assert!(!term.damage().is_full());
+}
+
+#[test]
+fn osc_133_failure_damages_the_screen() {
+    let mut term = fed(2, 10, "\x1b]133;A\x07$ x\r\n");
+    term.reset_damage();
+    feed(&mut term, "\x1b]133;D;1\x07");
+    assert!(term.damage().is_full());
+}
+
+#[test]
+fn osc_133_failure_marks_the_nearest_prompt_above() {
+    let term = fed(
+        4,
+        10,
+        "\x1b]133;A\x07$ a\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ b\r\n\x1b]133;D;1\x07",
+    );
+    assert_eq!(
+        marks(&term)[..2],
+        [(true, false, false), (true, false, true)]
+    );
+}
+
+#[test]
+fn osc_133_is_ignored_on_the_alternate_screen() {
+    let term = fed(2, 10, "\x1b[?1049h\x1b]133;A\x07\x1b]133;C\x07");
+    assert_eq!(marks(&term), [(false, false, false); 2]);
+}
+
+#[test]
+fn osc_133_ignores_other_marks() {
+    let term = fed(2, 10, "\x1b]133;B\x07\x1b]133;\x07");
+    assert_eq!(marks(&term), [(false, false, false); 2]);
+}
+
+#[test]
+fn shell_marks_scroll_into_history_with_their_rows() {
+    let term = fed(2, 10, "\x1b]133;A\x07$ a\r\nb\r\nc");
+    assert_eq!(
+        marks(&term),
+        [
+            (true, false, false),
+            (false, false, false),
+            (false, false, false)
+        ]
+    );
+}
+
+#[test]
+fn shell_marks_are_cleared_with_the_screen() {
+    let term = fed(2, 10, "\x1b]133;A\x07$ a\x1b[2J");
+    assert_eq!(marks(&term), [(false, false, false); 2]);
+}
+
+#[test]
+fn shell_marks_do_not_follow_a_recycled_row() {
+    let mut term = Term::new(2, 10, 1);
+    feed(&mut term, "\x1b]133;A\x07a\r\nb\r\nc\r\nd");
+    assert_eq!(marks(&term), [(false, false, false); 3]);
+}
+
+#[test]
+fn shell_marks_stay_on_the_first_row_after_a_reflow() {
+    let mut term = fed(3, 10, "x\r\n\x1b]133;A\x07abcdefgh\r\ny");
+    term.resize(3, 4);
+    assert_eq!(
+        marks(&term).iter().map(|mark| mark.0).collect::<Vec<_>>(),
+        [false, true, false, false]
+    );
+}
+
+#[test]
+fn osc_8_links_the_following_cells() {
+    let term = fed(1, 10, "a\x1b]8;;https://e.test/x\x07bc\x1b]8;;\x07d");
+    let links: Vec<_> = (0..4)
+        .map(|column| term.link(style_at(&term, 0, column).link))
+        .collect();
+    assert_eq!(
+        links,
+        [
+            None,
+            Some("https://e.test/x"),
+            Some("https://e.test/x"),
+            None
+        ]
+    );
+}
+
+#[test]
+fn osc_8_reuses_the_id_of_a_repeated_uri() {
+    let term = fed(1, 10, "\x1b]8;;u1\x07a\x1b]8;;u2\x07b\x1b]8;;u1\x07c");
+    assert_eq!(
+        [0, 1, 2].map(|column| style_at(&term, 0, column).link),
+        [1, 2, 1]
+    );
+}
+
+#[test]
+fn osc_8_keeps_semicolons_in_the_uri_and_ignores_the_parameters() {
+    let term = fed(1, 10, "\x1b]8;id=7;https://e.test/a;b\x1b\\x");
+    assert_eq!(
+        term.link(style_at(&term, 0, 0).link),
+        Some("https://e.test/a;b")
+    );
+}
+
+#[test]
+fn sgr_reset_keeps_the_link() {
+    let term = fed(1, 10, "\x1b]8;;u\x07\x1b[1ma\x1b[0mb\x1b[mc");
+    assert_eq!(
+        [0, 1, 2].map(|column| style_at(&term, 0, column).link),
+        [1, 1, 1]
+    );
+    assert_eq!(style_at(&term, 0, 1).attrs, Attrs::default());
+    assert_eq!(style_at(&term, 0, 2).attrs, Attrs::default());
+}
+
+#[test]
+fn osc_8_ignores_a_uri_over_the_size_limit() {
+    let term = fed(1, 10, &format!("\x1b]8;;{}\x07a", "u".repeat(4097)));
+    assert_eq!(style_at(&term, 0, 0).link, 0);
+}
+
+#[test]
+fn osc_8_stops_adding_links_when_the_table_is_full() {
+    let mut term = term(1, 10);
+    for index in 0..=u16::MAX {
+        feed(&mut term, &format!("\x1b]8;;u{index}\x07"));
+    }
+    feed(&mut term, "a\x1b]8;;u0\x07b");
+    assert_eq!(style_at(&term, 0, 0).link, 0);
+    assert_eq!(style_at(&term, 0, 1).link, 1);
+}
+
+#[test]
+fn link_of_an_unknown_id_is_absent() {
+    let term = fed(1, 10, "\x1b]8;;u\x07a");
+    assert_eq!(term.link(0), None);
+    assert_eq!(term.link(2), None);
+}
+
+#[test]
+fn full_reset_forgets_the_links() {
+    let term = fed(1, 10, "\x1b]8;;u\x07a\x1bc");
+    assert_eq!(term.link(1), None);
+}
+
+#[test]
+fn keyboard_flags_start_at_zero() {
+    assert_eq!(term(1, 5).keyboard(), 0);
+}
+
+#[test]
+fn keyboard_push_sets_the_flags_and_pop_restores_them() {
+    let mut term = fed(1, 5, "\x1b[>1u\x1b[>5u");
+    assert_eq!(term.keyboard(), 5);
+    feed(&mut term, "\x1b[<u");
+    assert_eq!(term.keyboard(), 1);
+    feed(&mut term, "\x1b[<5u");
+    assert_eq!(term.keyboard(), 0);
+}
+
+#[test]
+fn keyboard_push_without_flags_pushes_zero() {
+    let term = fed(1, 5, "\x1b[>3u\x1b[>u");
+    assert_eq!(term.keyboard(), 0);
+}
+
+#[test]
+fn keyboard_set_replaces_adds_and_removes_flags() {
+    let mut term = fed(1, 5, "\x1b[=5u");
+    assert_eq!(term.keyboard(), 5);
+    feed(&mut term, "\x1b[=2;2u");
+    assert_eq!(term.keyboard(), 7);
+    feed(&mut term, "\x1b[=4;3u");
+    assert_eq!(term.keyboard(), 3);
+    feed(&mut term, "\x1b[=8;1u");
+    assert_eq!(term.keyboard(), 8);
+    feed(&mut term, "\x1b[=1;9u");
+    assert_eq!(term.keyboard(), 8);
+}
+
+#[test]
+fn keyboard_set_changes_only_the_top_of_the_stack() {
+    let term = fed(1, 5, "\x1b[>1u\x1b[>2u\x1b[=8u\x1b[<u");
+    assert_eq!(term.keyboard(), 1);
+}
+
+#[test]
+fn keyboard_flags_outside_the_known_bits_are_dropped() {
+    let term = fed(1, 5, "\x1b[>255u");
+    assert_eq!(term.keyboard(), 31);
+}
+
+#[test]
+fn keyboard_query_reports_the_flags() {
+    let mut term = fed(1, 5, "\x1b[>9u\x1b[?u");
+    assert_eq!(reply(&mut term), "\x1b[?9u");
+}
+
+#[test]
+fn keyboard_stack_drops_the_oldest_entry_when_full() {
+    let mut term = term(1, 5);
+    for flags in 1..=17 {
+        feed(&mut term, &format!("\x1b[>{flags}u"));
+    }
+    feed(&mut term, "\x1b[<15u");
+    assert_eq!(term.keyboard(), 2);
+    feed(&mut term, "\x1b[<u");
+    assert_eq!(term.keyboard(), 0);
+}
+
+#[test]
+fn keyboard_flags_are_separate_on_the_alternate_screen() {
+    let mut term = fed(1, 5, "\x1b[>1u\x1b[?1049h");
+    assert_eq!(term.keyboard(), 0);
+    feed(&mut term, "\x1b[>8u\x1b[?1049l");
+    assert_eq!(term.keyboard(), 1);
+    feed(&mut term, "\x1b[?1049h");
+    assert_eq!(term.keyboard(), 8);
+}
+
+#[test]
+fn full_reset_clears_the_keyboard_flags() {
+    let term = fed(1, 5, "\x1b[>1u\x1bc");
+    assert_eq!(term.keyboard(), 0);
 }

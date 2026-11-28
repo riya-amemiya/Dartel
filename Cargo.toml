@@ -25,7 +25,7 @@ dartel-vt = { path = "crates/dartel-vt" }
 fontdb = "=0.24.0"
 memchr = "=2.8.3"
 regex = "=1.13.2"
-rustix = { version = "=1.1.6", features = ["process", "pty", "stdio", "termios"] }
+rustix = { version = "=1.1.6", features = ["process", "pty", "stdio", "system", "termios"] }
 swash = "=0.2.10"
 umt_rust = "=0.8.0"
 unicode-width = "=0.2.3"
