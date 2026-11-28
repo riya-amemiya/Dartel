@@ -8,7 +8,7 @@ use dartel_image::{Image, MAX_SIDE, base64, inflate, png, sixel};
 use super::{Row, Term};
 
 const QUOTA: usize = 256 << 20;
-const MAX_UPLOAD: usize = (MAX_SIDE as usize * MAX_SIDE as usize * 4).div_ceil(3) * 4;
+const MAX_UPLOAD: usize = MAX_SIDE as usize * MAX_SIDE as usize * 4;
 const MAX_INFLATED: usize = 64 << 20;
 const MAX_SIXEL: usize = 32 << 20;
 const DEFAULT_CELL: [u16; 2] = [8, 16];
@@ -149,7 +149,7 @@ pub(super) struct Graphics {
     images: HashMap<u32, Arc<Image>>,
     order: VecDeque<u32>,
     numbers: HashMap<u32, u32>,
-    upload: Option<(Command, Vec<u8>)>,
+    upload: Option<(Command, Option<Vec<u8>>)>,
     sixel: Option<(bool, Vec<u8>)>,
     placed: Vec<Weak<Picture>>,
     serial: u64,
@@ -228,7 +228,7 @@ impl Graphics {
     }
 }
 
-fn load(command: &Command, data: &[u8]) -> Result<Image, &'static str> {
+fn load(command: &Command, bytes: Option<Vec<u8>>) -> Result<Image, &'static str> {
     if command.medium != b'd' {
         return Err("EINVAL:only direct transmission is supported");
     }
@@ -241,7 +241,7 @@ fn load(command: &Command, data: &[u8]) -> Result<Image, &'static str> {
         100 => MAX_INFLATED,
         _ => return Err("EINVAL:unsupported image format"),
     };
-    let bytes = base64::decode(data).ok_or("EINVAL:the payload is not base64")?;
+    let bytes = bytes.ok_or("EINVAL:the payload is not base64")?;
     let bytes = if command.compression == b'z' {
         inflate::zlib(&bytes, limit).ok_or("EINVAL:the payload is not zlib data")?
     } else {
@@ -322,10 +322,13 @@ impl Term {
             .unwrap_or(payload.len());
         let command = Command::parse(&payload[..split]);
         let data = payload.get(split + 1..).unwrap_or(&[]);
-        if let Some((first, mut buffer)) = self.graphics.upload.take()
+        if let Some((first, buffer)) = self.graphics.upload.take()
             && command.action != b'd'
         {
-            append(&mut buffer, data, MAX_UPLOAD);
+            let buffer = buffer.zip(base64::decode(data)).map(|(mut buffer, bytes)| {
+                append(&mut buffer, &bytes, MAX_UPLOAD);
+                buffer
+            });
             if command.more {
                 self.graphics.upload = Some((first, buffer));
             } else {
@@ -334,7 +337,7 @@ impl Term {
                         quiet: first.quiet.max(command.quiet),
                         ..first
                     },
-                    &buffer,
+                    buffer,
                 );
             }
             return;
@@ -349,9 +352,9 @@ impl Term {
         }
         match command.action {
             b't' | b'T' | b'q' if command.more => {
-                self.graphics.upload = Some((command, data.to_vec()));
+                self.graphics.upload = Some((command, base64::decode(data)));
             }
-            b't' | b'T' | b'q' => self.transmit(&command, data),
+            b't' | b'T' | b'q' => self.transmit(&command, base64::decode(data)),
             b'p' => self.put(&command),
             b'd' => self.delete(&command),
             _ => self.answer(&command, command.id, Err("EINVAL:unsupported action")),
@@ -375,8 +378,8 @@ impl Term {
         let _ = write!(self.outbox.reply, ";{}\x1b\\", result.err().unwrap_or("OK"));
     }
 
-    fn transmit(&mut self, command: &Command, data: &[u8]) {
-        let image = match load(command, data) {
+    fn transmit(&mut self, command: &Command, bytes: Option<Vec<u8>>) {
+        let image = match load(command, bytes) {
             Ok(image) => Arc::new(image),
             Err(message) => {
                 self.answer(command, command.id, Err(message));

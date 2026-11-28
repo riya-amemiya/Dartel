@@ -409,6 +409,46 @@ fn delete_command_abandons_a_chunked_transfer() {
 }
 
 #[test]
+fn chunks_padded_on_their_own_are_joined() {
+    let pixels = COLOR.repeat(3);
+    let term = fed(
+        6,
+        8,
+        &[format!(
+            "\x1b_Ga=T,f=24,s=3,v=1,m=1\x1b\\\x1b_Gm=1;{}\x1b\\\x1b_Gm=1;{}\x1b\\\x1b_Gm=0\x1b\\",
+            encoded(&pixels[..4]),
+            encoded(&pixels[4..])
+        )
+        .as_bytes()],
+    );
+    assert_eq!(layout(&term)[0], [(0, 0, 3, 1)]);
+}
+
+#[test]
+fn first_chunk_outside_base64_fails_the_whole_transfer() {
+    assert_eq!(
+        answered(&[format!(
+            "\x1b_Ga=t,f=24,s=1,v=1,i=9,m=1;!!!!\x1b\\\x1b_Gm=0;{}\x1b\\",
+            encoded(&COLOR)
+        )
+        .as_bytes()]),
+        answer(9, "EINVAL:the payload is not base64")
+    );
+}
+
+#[test]
+fn later_chunk_outside_base64_fails_the_whole_transfer() {
+    assert_eq!(
+        answered(&[format!(
+            "\x1b_Ga=t,f=24,s=1,v=1,i=9,m=1;{}\x1b\\\x1b_Gm=0;!!!!\x1b\\",
+            encoded(&COLOR)
+        )
+        .as_bytes()]),
+        answer(9, "EINVAL:the payload is not base64")
+    );
+}
+
+#[test]
 fn compressed_pixels_are_inflated() {
     let term = fed(6, 8, &[&kitty("a=T,f=24,s=1,v=1,o=z", &deflated(&COLOR))]);
     assert_eq!(tiles(&term, 0)[0].picture.pixels, [200, 100, 50, 255]);
