@@ -308,6 +308,7 @@ classDiagram
     class Damage {
         Vec~bool~ lines
         bool full
+        usize shift
     }
     Term *-- Grid
     Term *-- StyleTable
@@ -355,6 +356,12 @@ classDiagram
   pen as stale, and the style is interned when the next character is written.
 - `Damage` marks the lines a frame has to rebuild. Scrolling the view or
   resizing sets `full`.
+- A linefeed that scrolls the whole screen keeps `full` clear. The marks move
+  up with their rows, the rows that came in at the bottom are marked, and
+  `shift` counts the rows the screen moved since the last frame. `full` is set
+  instead when the screen moved by its whole height, when a scroll region is
+  set, or while the view shows history. While `full` is set, a scroll only
+  reads the flag.
 
 Printable ASCII takes a short path through `Term::write_ascii`. While insert
 mode is off and the active character set is ASCII, a run is copied into the
@@ -544,6 +551,10 @@ flowchart TD
 
 - `Scene` caches the background quads and glyph quads of each line. A frame
   rebuilds only the lines that `Damage` reports.
+- Before it rebuilds lines, `Scene::compose` rotates the cached lines up by
+  `Damage::shift` and moves their quads by that many cell heights, so a frame
+  after a scroll rebuilds only the lines that came in at the bottom and the
+  lines that changed.
 - `Scene::compose_row` reads a row up to `Row::used`, because the cells after
   it are default cells. Inside that range it stops before the run of equal
   blank cells that ends the row and covers the run with one background quad.
