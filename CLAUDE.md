@@ -93,9 +93,9 @@ Dartel/
 │   │   │   └── compose.rs    # Time of one Scene::compose call over generated screens
 │   │   └── src/
 │   │       ├── lib.rs        # Exports
-│   │       ├── font.rs       # System font scan, font discovery, fallback, rasterization
+│   │       ├── font.rs       # System font scan, font discovery, fallback, shaping, rasterization
 │   │       ├── gpu.rs        # wgpu surface, glyph atlas, picture textures, draw calls
-│   │       ├── scene.rs      # Rows to quads, glyph cache, drawn box and block glyphs, pictures, overlays, tab bar
+│   │       ├── scene.rs      # Rows to quads, glyph cache, ligatures, drawn box and block glyphs, pictures, overlays, tab bar
 │   │       └── shader.wgsl   # Vertex and fragment shader
 │   └── dartel/               # Binary crate
 │       ├── macos/
@@ -311,6 +311,15 @@ Build and test for that target run on the macOS CI job.
   `dartel-fonts` thread before it builds the event loop, and `View::new` joins
   the thread after the window exists. Keep the scan off the UI thread between
   the start of the process and the first frame.
+- `Fonts::ligatures` is decided once in `Fonts::new`. Ligatures are applied by
+  `Scene::ligate_rows` after `Scene::compose_rows`, on the same rebuilt lines,
+  by swapping glyph quads that `Scene::compose_row` built, so
+  `Scene::compose_row` carries no ligature code. Keep it that way, and compare
+  `Scene::compose_rows` in callgrind before and after a change near it,
+  because a second caller of one of its inlined callees changes its
+  instruction count. A ligature covers the cells of its characters and never
+  crosses a style change, a wide character, a cell with combining marks, or a
+  character that `Scene` draws itself.
 - `Config::keys` holds parsed shortcuts, and no key event parses text. An
   `Action` has an entry in `ACTION_NAMES`, `Action::ALL`, and `DEFAULT_KEYS`
   at the same index, and an arm in `View::shortcut`. Adding one changes the
@@ -335,7 +344,8 @@ Build and test for that target run on the macOS CI job.
 - The `dartel-render` and `dartel` crates have no integration tests. Check
   them on a display. `scene.rs` unit-tests the private helpers that build the
   underline masks and the masks of box drawing characters, block elements,
-  and Powerline arrows.
+  and Powerline arrows, and the helpers that split ligature runs and swap
+  glyph quads.
 
 ## Checking the Window on Linux Without a Display
 
@@ -422,7 +432,7 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
 | `memchr` | Byte and substring search |
 | `regex` | Regex search over scrollback |
 | `rustix` | PTY, termios, and process calls |
-| `swash` | Glyph rasterization |
+| `swash` | Glyph rasterization and ligature shaping |
 | `umt_rust` | Hex color parsing for OSC sequences and settings, base64 decoding for OSC 52 |
 | `unicode-width` | Character cell width |
 | `wgpu` | GPU rendering |

@@ -3,11 +3,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use dartel_term::{
-    Attrs, Color, CursorShape, Modes, Palette, Picture, Rgb, Selection, Span, Style, Term, Tile,
+    Attrs, Cell, Color, CursorShape, Modes, Palette, Picture, Rgb, Selection, Span, Style, Term,
+    Tile,
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::font::{Fonts, Library, Metrics, REGULAR};
+use crate::font::{Fonts, Library, Ligature, Metrics, REGULAR, Raster};
 use crate::gpu::{ATLAS_SIZE, Gpu, Layer, Quad};
 
 const SELECTION_ALPHA: u8 = 80;
@@ -157,6 +158,9 @@ pub struct Scene {
     fonts: Fonts,
     ascii: [[Option<Glyph>; 128]; 4],
     glyphs: HashMap<(char, usize), Glyph>,
+    shaped: HashMap<(u16, usize), Glyph>,
+    joins: Vec<Ligature>,
+    text: String,
     patterns: [Option<Glyph>; 3],
     pen: [u32; 2],
     shelf: u32,
@@ -212,8 +216,50 @@ fn look(style: Style, palette: &Palette, reverse: bool) -> Look {
         background: (inverse || style.background != Color::DEFAULT).then_some(paper),
         underline: palette.resolve(style.underline, ink),
         attrs,
-        face: usize::from(style.attrs.contains(Attrs::BOLD))
-            + 2 * usize::from(style.attrs.contains(Attrs::ITALIC)),
+        face: face(style.attrs),
+    }
+}
+
+fn face(attrs: Attrs) -> usize {
+    usize::from(attrs.contains(Attrs::BOLD)) + 2 * usize::from(attrs.contains(Attrs::ITALIC))
+}
+
+fn joinable(cell: Cell) -> bool {
+    cell.ch().is_some_and(|c| !drawn(u32::from(c)))
+        && !cell.is_wide()
+        && !cell.is_spacer()
+        && !cell.is_marked()
+}
+
+fn runs(cells: &[Cell]) -> impl Iterator<Item = (usize, &[Cell])> {
+    cells
+        .chunk_by(|a, b| a.style() == b.style() && joinable(*a) && joinable(*b))
+        .scan(0, |column, run| {
+            let start = *column;
+            *column += run.len();
+            Some((start, run))
+        })
+        .filter(|(_, run)| run.len() > 1)
+}
+
+fn swap(glyphs: &mut Vec<Quad>, from: usize, nominal: Option<Quad>, joined: Option<Quad>) -> usize {
+    let found = nominal
+        .and_then(|nominal| glyphs[from..].iter().position(|quad| *quad == nominal))
+        .map(|position| from + position);
+    match (found, joined) {
+        (Some(position), Some(quad)) => {
+            glyphs[position] = quad;
+            position + 1
+        }
+        (Some(position), None) => {
+            glyphs.remove(position);
+            position
+        }
+        (None, Some(quad)) => {
+            glyphs.insert(from, quad);
+            from + 1
+        }
+        (None, None) => from,
     }
 }
 
@@ -546,9 +592,13 @@ fn draw_powerline(canvas: &mut Canvas, code: u32, light: u32) {
     });
 }
 
+fn drawn(code: u32) -> bool {
+    matches!(code, 0x2500..=0x259F | 0xE0B0..=0xE0B3)
+}
+
 fn drawing(c: char, size: [u32; 2], stroke: u32) -> Option<Vec<u8>> {
     let code = u32::from(c);
-    if !matches!(code, 0x2500..=0x259F | 0xE0B0..=0xE0B3) {
+    if !drawn(code) {
         return None;
     }
     let strokes = strokes(size, stroke);
@@ -591,6 +641,9 @@ impl Scene {
             fonts: Fonts::new(library, font_family, font_fallback, font_size)?,
             ascii: [[None; 128]; 4],
             glyphs: HashMap::new(),
+            shaped: HashMap::new(),
+            joins: Vec::new(),
+            text: String::new(),
             patterns: [None; 3],
             pen: [0; 2],
             shelf: 0,
@@ -678,6 +731,7 @@ impl Scene {
     fn forget_glyphs(&mut self) {
         self.ascii = [[None; 128]; 4];
         self.glyphs.clear();
+        self.shaped.clear();
         self.patterns = [None; 3];
         self.pen = [0; 2];
         self.shelf = 0;
@@ -709,6 +763,16 @@ impl Scene {
         Some(glyph)
     }
 
+    fn shaped_glyph(&mut self, id: u16, face: usize) -> Option<Glyph> {
+        if let Some(cached) = self.shaped.get(&(id, face)) {
+            return Some(*cached);
+        }
+        let raster = self.fonts.rasterize_glyph(id, face);
+        let glyph = self.store(raster)?;
+        self.shaped.insert((id, face), glyph);
+        Some(glyph)
+    }
+
     fn rasterize(&mut self, c: char, face: usize) -> Option<Glyph> {
         let metrics = self.fonts.metrics();
         let size = [metrics.width, metrics.height];
@@ -724,7 +788,12 @@ impl Scene {
                 ..Glyph::default()
             });
         }
-        let Some(raster) = self.fonts.rasterize(c, face).filter(|raster| {
+        let raster = self.fonts.rasterize(c, face);
+        self.store(raster)
+    }
+
+    fn store(&mut self, raster: Option<Raster>) -> Option<Glyph> {
+        let Some(raster) = raster.filter(|raster| {
             (1..=ATLAS_SIZE).contains(&raster.width) && (1..=ATLAS_SIZE).contains(&raster.height)
         }) else {
             return Some(Glyph::default());
@@ -850,10 +919,11 @@ impl Scene {
             self.stale = true;
         }
         self.shift(term);
-        if !self.compose_rows(term) {
+        if !(self.compose_rows(term) && self.ligate_rows(term)) {
             self.forget_glyphs();
             self.rows.resize_with(term.lines(), Row::default);
             self.compose_rows(term);
+            self.ligate_rows(term);
         }
         self.stale = false;
         self.quads.clear();
@@ -1001,6 +1071,91 @@ impl Scene {
     fn compose_rows(&mut self, term: &Term) -> bool {
         (0..term.lines())
             .all(|line| !(self.stale || term.damage().line(line)) || self.compose_row(term, line))
+    }
+
+    fn ligate_rows(&mut self, term: &Term) -> bool {
+        !self.fonts.ligatures()
+            || (0..term.lines())
+                .all(|line| !(self.stale || term.damage().line(line)) || self.ligate(term, line))
+    }
+
+    fn ligate(&mut self, term: &Term, line: usize) -> bool {
+        let source = term.visible_row(line);
+        let cells = &source.cells()[..source.used().min(term.cols())];
+        self.joins.clear();
+        for (column, run) in runs(cells) {
+            self.text.clear();
+            self.text.extend(run.iter().filter_map(|cell| cell.ch()));
+            self.joins.extend(
+                self.fonts
+                    .shape(&self.text, face(term.style(run[0].style()).attrs))
+                    .iter()
+                    .map(|ligature| Ligature {
+                        start: column + ligature.start,
+                        ..*ligature
+                    }),
+            );
+        }
+        if self.joins.is_empty() {
+            return true;
+        }
+        let joins = std::mem::take(&mut self.joins);
+        let mut row = std::mem::take(&mut self.rows[line]);
+        let complete = self
+            .join_glyphs(term, line, cells, &joins, &mut row)
+            .is_some();
+        self.rows[line] = row;
+        self.joins = joins;
+        complete
+    }
+
+    fn join_glyphs(
+        &mut self,
+        term: &Term,
+        line: usize,
+        cells: &[Cell],
+        joins: &[Ligature],
+        row: &mut Row,
+    ) -> Option<()> {
+        let metrics = self.fonts.metrics();
+        let width = metrics.width as i32;
+        let top = self.top() + line as i32 * metrics.height as i32;
+        let reverse = term.modes().contains(Modes::REVERSE_VIDEO);
+        let mut index = 0;
+        for ligature in joins {
+            let look = look(
+                term.style(cells[ligature.start].style()),
+                term.palette(),
+                reverse,
+            );
+            let glyph = self.shaped_glyph(ligature.glyph, look.face)?;
+            for offset in 0..ligature.cells {
+                let left = self.padding + (ligature.start + offset) as i32 * width;
+                let nominal = self.glyph(cells[ligature.start + offset].ch()?, look.face)?;
+                index = swap(
+                    &mut row.glyphs,
+                    index,
+                    (nominal.size[0] > 0).then(|| {
+                        textured(
+                            left + centering(width, nominal) + i32::from(nominal.left),
+                            top + metrics.ascent - i32::from(nominal.top),
+                            nominal,
+                            look.foreground,
+                        )
+                    }),
+                    (offset == 0 && glyph.size[0] > 0).then(|| {
+                        textured(
+                            left + centering(ligature.cells as i32 * width, glyph)
+                                + i32::from(glyph.left),
+                            top + metrics.ascent - i32::from(glyph.top),
+                            glyph,
+                            look.foreground,
+                        )
+                    }),
+                );
+            }
+        }
+        Some(())
     }
 
     fn compose_row(&mut self, term: &Term, line: usize) -> bool {
@@ -1331,7 +1486,89 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARMS, Metrics, Pattern, band, drawing, mask, strokes, thumb};
+    use dartel_term::{Cell, Rgb, Term};
+    use dartel_vt::Parser;
+
+    use super::{
+        ARMS, Metrics, Pattern, Quad, band, drawing, mask, runs, solid, strokes, swap, thumb,
+    };
+
+    fn spans(input: &str) -> Vec<(usize, usize)> {
+        let mut term = Term::new(1, 20, 0);
+        Parser::new().advance(&mut term, input.as_bytes());
+        let row = term.visible_row(0);
+        let cells: Vec<Cell> = row.cells()[..row.used()].to_vec();
+        runs(&cells)
+            .map(|(start, run)| (start, run.len()))
+            .collect()
+    }
+
+    fn quad(x: i32) -> Quad {
+        solid(x, 0, 1, 1, Rgb::new(1, 2, 3), u8::MAX)
+    }
+
+    #[test]
+    fn run_covers_a_line_of_one_style() {
+        assert_eq!(spans("a->b"), [(0, 4)]);
+    }
+
+    #[test]
+    fn style_change_splits_a_run() {
+        assert_eq!(spans("a-\x1b[31m>b"), [(0, 2), (2, 2)]);
+    }
+
+    #[test]
+    fn wide_character_ends_a_run() {
+        assert_eq!(spans("ab\u{65E5}cd"), [(0, 2), (4, 2)]);
+    }
+
+    #[test]
+    fn cell_with_a_combining_mark_ends_a_run() {
+        assert_eq!(spans("abc\u{0301}de"), [(0, 2), (3, 2)]);
+    }
+
+    #[test]
+    fn drawn_box_character_ends_a_run() {
+        assert_eq!(spans("ab\u{2500}cd"), [(0, 2), (3, 2)]);
+    }
+
+    #[test]
+    fn default_cell_ends_a_run() {
+        assert_eq!(spans("ab\x1b[3Ccd"), [(0, 2), (5, 2)]);
+    }
+
+    #[test]
+    fn single_cell_is_not_a_run() {
+        assert_eq!(spans("a\x1b[31mb\x1b[32mcd"), [(2, 2)]);
+    }
+
+    #[test]
+    fn swap_replaces_the_nominal_quad_with_the_ligature() {
+        let mut glyphs = vec![quad(0), quad(1), quad(2)];
+        assert_eq!(swap(&mut glyphs, 0, Some(quad(1)), Some(quad(9))), 2);
+        assert_eq!(glyphs, [quad(0), quad(9), quad(2)]);
+    }
+
+    #[test]
+    fn swap_removes_the_nominal_quad_of_a_covered_cell() {
+        let mut glyphs = vec![quad(0), quad(1), quad(2)];
+        assert_eq!(swap(&mut glyphs, 0, Some(quad(1)), None), 1);
+        assert_eq!(glyphs, [quad(0), quad(2)]);
+    }
+
+    #[test]
+    fn swap_inserts_the_ligature_where_the_cell_drew_nothing() {
+        let mut glyphs = vec![quad(0), quad(2)];
+        assert_eq!(swap(&mut glyphs, 1, None, Some(quad(9))), 2);
+        assert_eq!(glyphs, [quad(0), quad(9), quad(2)]);
+    }
+
+    #[test]
+    fn swap_searches_only_after_the_previous_ligature() {
+        let mut glyphs = vec![quad(1), quad(2), quad(1)];
+        assert_eq!(swap(&mut glyphs, 1, Some(quad(1)), Some(quad(9))), 3);
+        assert_eq!(glyphs, [quad(1), quad(2), quad(9)]);
+    }
 
     fn metrics(width: u32, height: u32, underline: i32, stroke: u32) -> Metrics {
         Metrics {
