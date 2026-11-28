@@ -78,7 +78,7 @@ Dartel/
 │   │       └── term_test.rs
 │   ├── dartel-pty/           # Unix only
 │   │   ├── src/
-│   │   │   └── lib.rs        # PTY allocation, login shell spawn, resize, hangup, host name
+│   │   │   └── lib.rs        # PTY allocation, login shell spawn with DARTEL_BIN, resize, hangup, host name
 │   │   └── tests/
 │   │       └── pty_test.rs
 │   ├── dartel-config/        # Settings
@@ -100,8 +100,12 @@ Dartel/
 │       │   ├── Info.plist    # Bundle metadata for Dartel.app
 │       │   ├── icon.png      # 1024 px rendering of icon.svg, source of Dartel.icns
 │       │   └── icon.svg      # Application icon drawing
+│       ├── shell/            # Shell integration scripts embedded in the binary
+│       │   ├── dartel.bash   # PROMPT_COMMAND and PS0 hooks
+│       │   ├── dartel.fish   # fish_prompt and fish_preexec handlers
+│       │   └── dartel.zsh    # precmd and preexec hooks
 │       └── src/
-│           ├── main.rs       # config subcommands, event loop start
+│           ├── main.rs       # config and shell subcommands, event loop start
 │           ├── app.rs        # winit handler, tabs, selection, prompts, shortcuts
 │           ├── clipboard.rs  # Clipboard through the platform commands
 │           ├── input.rs      # Key event to byte sequence encoding
@@ -159,6 +163,16 @@ later starts:
 ```sh
 cargo run -p dartel -- config save [FILE]
 cargo run -p dartel -- config load [FILE]
+```
+
+Print the shell integration script for zsh, bash, or fish. A shell that
+Dartel starts has `DARTEL_BIN` set to the Dartel executable, and the line in
+its startup file runs this subcommand through that variable:
+
+```sh
+cargo run -p dartel -- shell zsh
+cargo run -p dartel -- shell bash
+cargo run -p dartel -- shell fish
 ```
 
 ## Toolchain
