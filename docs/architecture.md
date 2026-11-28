@@ -491,10 +491,14 @@ flowchart TD
 - `Scene` caches the background quads and glyph quads of each line. A frame
   rebuilds only the lines that `Damage` reports.
 - Overlays are appended after the cached quads on every frame. They are search
-  matches, the selection, the cursor, the banner on the last line, the IME
-  preedit text, and the tab bar. The banner shows the search prompt, a settings
-  prompt, or a notice, and keeps the end of a text that is wider than the
-  window.
+  matches, the selection, the scroll position bar, the cursor, the banner on
+  the last line, the IME preedit text, and the tab bar. The banner shows the
+  search prompt, a settings prompt, or a notice, and keeps the end of a text
+  that is wider than the window.
+- The scroll position bar is one quad on the right edge of the window, drawn
+  only while the view is scrolled back. Its length is the share of all rows
+  that the screen shows, at least one cell, and its position follows the first
+  visible row.
 - The cached quads of the lines start below the tab bar. Showing or hiding the
   bar marks every line stale.
 - `Scene` keeps the picture quads of each line beside its background and glyph
