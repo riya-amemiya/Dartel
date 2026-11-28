@@ -607,7 +607,6 @@ impl View {
             }
             self.blinking = self.focused && term.cursor().blinking && term.cursor().visible;
             self.scene.compose(
-                &self.gpu,
                 &term,
                 &Overlay {
                     focused: self.focused,
@@ -649,6 +648,7 @@ impl View {
                 PhysicalSize::new(self.scene.metrics().width, self.scene.metrics().height),
             );
         }
+        self.scene.flush(&self.gpu);
         self.window.pre_present_notify();
         if !self.gpu.draw(
             self.scene.quads(),
