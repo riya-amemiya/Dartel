@@ -10,7 +10,7 @@ use dartel_config::{
 use dartel_term::{Palette, Rgb};
 
 #[cfg(target_os = "macos")]
-const DEFAULT_SHORTCUTS: [&str; 24] = [
+const DEFAULT_SHORTCUTS: [&str; 25] = [
     "cmd+v",
     "cmd+c",
     "cmd+o",
@@ -19,6 +19,7 @@ const DEFAULT_SHORTCUTS: [&str; 24] = [
     "cmd+down",
     "cmd+t",
     "cmd+w",
+    "cmd+n",
     "cmd+1",
     "cmd+2",
     "cmd+3",
@@ -37,7 +38,7 @@ const DEFAULT_SHORTCUTS: [&str; 24] = [
     "shift+pagedown",
 ];
 #[cfg(not(target_os = "macos"))]
-const DEFAULT_SHORTCUTS: [&str; 24] = [
+const DEFAULT_SHORTCUTS: [&str; 25] = [
     "ctrl+shift+v",
     "ctrl+shift+c",
     "ctrl+shift+o",
@@ -46,6 +47,7 @@ const DEFAULT_SHORTCUTS: [&str; 24] = [
     "ctrl+shift+down",
     "ctrl+shift+t",
     "ctrl+shift+w",
+    "ctrl+shift+n",
     "ctrl+shift+1",
     "ctrl+shift+2",
     "ctrl+shift+3",
@@ -111,6 +113,7 @@ previous-prompt = \"ctrl+shift+up\"
 next-prompt = \"ctrl+shift+down\"
 new-tab = \"ctrl+shift+t\"
 close-tab = \"ctrl+shift+w\"
+new-window = \"ctrl+shift+n\"
 tab-1 = \"ctrl+shift+1\"
 tab-2 = \"ctrl+shift+2\"
 tab-3 = \"ctrl+shift+3\"
@@ -622,6 +625,7 @@ fn action_names_are_the_keys_of_the_keys_table() {
             "next-prompt",
             "new-tab",
             "close-tab",
+            "new-window",
             "tab-1",
             "tab-2",
             "tab-3",
@@ -692,6 +696,25 @@ fn keys_are_read() {
     assert_eq!(
         read("[keys]\ncopy = \"alt+c\"", Action::Copy),
         chord(Modifiers::ALT, Key::Character('c'))
+    );
+}
+
+#[test]
+fn new_window_shortcut_is_read() {
+    assert_eq!(
+        read("keys.new-window = \"alt+n\"", Action::NewWindow),
+        chord(Modifiers::ALT, Key::Character('n'))
+    );
+}
+
+#[test]
+fn new_window_shortcut_that_new_tab_uses_is_rejected() {
+    assert_eq!(
+        rejected(&format!("keys.new-window = \"{}\"", DEFAULT_SHORTCUTS[6])),
+        refusal(
+            1,
+            "`keys.new-window` must be a shortcut that `keys.new-tab` does not use"
+        )
     );
 }
 
@@ -993,9 +1016,14 @@ fn encoded_keys_decode_to_the_same_keys() {
 #[test]
 fn encode_writes_two_bytes_for_each_action_before_the_font_family() {
     let encoded = sample().encode();
-    assert_eq!(encoded.len(), 138 + "Test Mono".len());
+    assert_eq!(encoded.len(), 140 + "Test Mono".len());
     assert_eq!(&encoded[89..91], &[6, b'v']);
-    assert_eq!(&encoded[133..137], &[4, 0x84, 4, 0x85]);
+    assert_eq!(&encoded[135..139], &[4, 0x84, 4, 0x85]);
+}
+
+#[test]
+fn encode_writes_the_new_window_shortcut_after_the_close_tab_shortcut() {
+    assert_eq!(&sample().encode()[103..107], &[6, b'w', 6, b'n']);
 }
 
 #[test]
@@ -1005,8 +1033,8 @@ fn encode_writes_the_fallback_fonts_with_their_lengths_before_the_font_family() 
         ..sample()
     }
     .encode();
-    assert_eq!(&encoded[137..150], b"\x02\x03IPA\x07Unifont");
-    assert_eq!(&encoded[150..], b"Test Mono");
+    assert_eq!(&encoded[139..152], b"\x02\x03IPA\x07Unifont");
+    assert_eq!(&encoded[152..], b"Test Mono");
 }
 
 #[test]
@@ -1021,40 +1049,40 @@ fn encoded_fallback_fonts_at_the_limits_decode_to_the_same_config() {
 #[test]
 fn decode_rejects_a_truncated_state() {
     let encoded = sample().encode();
-    for length in [0, 7, 15, 23, 25, 27, 31, 88, 136, 137] {
+    for length in [0, 7, 15, 23, 25, 27, 31, 88, 138, 139] {
         assert_eq!(Config::decode(&encoded[..length]), None);
     }
 }
 
 #[test]
 fn decode_rejects_the_state_of_the_previous_format() {
-    assert_eq!(Config::decode(&patched(7, &[2])), None);
+    assert_eq!(Config::decode(&patched(7, &[3])), None);
 }
 
 #[test]
 fn decode_rejects_more_than_sixteen_fallback_fonts() {
-    assert_eq!(Config::decode(&patched(137, &[17])), None);
+    assert_eq!(Config::decode(&patched(139, &[17])), None);
 }
 
 #[test]
 fn decode_rejects_an_empty_fallback_font_name() {
-    assert_eq!(Config::decode(&patched(137, &[1, 0])), None);
+    assert_eq!(Config::decode(&patched(139, &[1, 0])), None);
 }
 
 #[test]
 fn decode_rejects_a_fallback_font_name_cut_by_the_end_of_the_state() {
-    assert_eq!(Config::decode(&patched(137, &[1, 9])), None);
+    assert_eq!(Config::decode(&patched(139, &[1, 9])), None);
 }
 
 #[test]
 fn decode_rejects_a_fallback_font_name_that_is_not_utf8() {
-    assert_eq!(Config::decode(&patched(137, &[1, 2, 0xFF, 0xFE])), None);
+    assert_eq!(Config::decode(&patched(139, &[1, 2, 0xFF, 0xFE])), None);
 }
 
 #[test]
 fn decode_accepts_an_empty_font_family() {
     assert_eq!(
-        Config::decode(&Config::default().encode()[..138]),
+        Config::decode(&Config::default().encode()[..140]),
         Some(Config {
             font_family: String::new(),
             ..Config::default()
@@ -1135,7 +1163,7 @@ fn decode_rejects_a_scrollback_outside_the_range() {
 
 #[test]
 fn decode_rejects_a_font_family_that_is_not_utf8() {
-    assert_eq!(Config::decode(&patched(138, &[0xFF])), None);
+    assert_eq!(Config::decode(&patched(140, &[0xFF])), None);
 }
 
 #[test]

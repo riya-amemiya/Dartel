@@ -1,8 +1,10 @@
+use std::cell::Cell;
 use std::cmp::Reverse;
 use std::env;
 use std::error::Error;
 use std::io;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,7 +50,13 @@ pub struct App {
     proxy: EventLoopProxy<Signal>,
     config: Config,
     locations: Option<Locations>,
-    view: Option<View>,
+    spawned: Rc<Cell<u64>>,
+    views: Vec<View>,
+}
+
+enum Request {
+    Window(Option<PathBuf>),
+    Apply(Box<Config>),
 }
 
 #[derive(Default)]
@@ -92,7 +100,8 @@ struct View {
     tabs: Vec<Tab>,
     labels: Vec<String>,
     active: usize,
-    spawned: u64,
+    spawned: Rc<Cell<u64>>,
+    request: Option<Request>,
     ask: Option<Ask>,
     notice: Option<(String, Instant)>,
     modifiers: Modifiers,
@@ -269,14 +278,58 @@ impl App {
             proxy,
             config,
             locations,
-            view: None,
+            spawned: Rc::new(Cell::new(0)),
+            views: Vec::new(),
         }
     }
 
-    fn finish(&mut self, event_loop: &ActiveEventLoop) {
-        if self.view.as_ref().is_some_and(|view| view.tabs.is_empty()) {
-            self.view = None;
-            event_loop.exit();
+    fn view(
+        &self,
+        event_loop: &ActiveEventLoop,
+        directory: Option<PathBuf>,
+    ) -> Result<View, Box<dyn Error>> {
+        View::new(
+            event_loop,
+            self.proxy.clone(),
+            self.config.clone(),
+            self.locations.clone(),
+            Rc::clone(&self.spawned),
+            directory,
+        )
+    }
+
+    fn locate(&self, id: u64) -> Option<(usize, usize)> {
+        self.views.iter().enumerate().find_map(|(window, view)| {
+            view.tabs
+                .iter()
+                .position(|tab| tab.session.id() == id)
+                .map(|tab| (window, tab))
+        })
+    }
+
+    fn serve(&mut self, event_loop: &ActiveEventLoop, index: usize, request: Request) {
+        match request {
+            Request::Window(directory) => match self.view(event_loop, directory) {
+                Ok(view) => self.views.push(view),
+                Err(error) => {
+                    self.views[index].notify(format!("a window could not be opened: {error}"));
+                }
+            },
+            Request::Apply(config) => {
+                for view in &mut self.views {
+                    view.apply(Config::clone(&config));
+                }
+                self.config = *config;
+            }
+        }
+    }
+
+    fn finish(&mut self, event_loop: &ActiveEventLoop, index: usize) {
+        if self.views[index].tabs.is_empty() {
+            self.views.remove(index);
+            if self.views.is_empty() {
+                event_loop.exit();
+            }
         }
     }
 }
@@ -287,6 +340,8 @@ impl View {
         proxy: EventLoopProxy<Signal>,
         config: Config,
         locations: Option<Locations>,
+        spawned: Rc<Cell<u64>>,
+        directory: Option<PathBuf>,
     ) -> Result<View, Box<dyn Error>> {
         let window = Arc::new(event_loop.create_window(attributes())?);
         window.set_ime_allowed(true);
@@ -315,7 +370,8 @@ impl View {
             tabs: Vec::new(),
             labels: Vec::new(),
             active: 0,
-            spawned: 0,
+            spawned,
+            request: None,
             ask: None,
             notice: None,
             modifiers: Modifiers::default(),
@@ -331,7 +387,7 @@ impl View {
             caret: None,
             clicks: None,
         };
-        view.open()?;
+        view.open(directory)?;
         Ok(view)
     }
 
@@ -348,20 +404,20 @@ impl View {
             .map(|(_, path)| PathBuf::from(path))
     }
 
-    fn open(&mut self) -> io::Result<()> {
+    fn open(&mut self, directory: Option<PathBuf>) -> io::Result<()> {
         self.scene.show_tabs(!self.tabs.is_empty());
         let opened = Session::spawn(
-            self.spawned,
+            self.spawned.get(),
             pty_size(&self.scene, self.size),
             cell_size(&self.scene),
-            self.directory(),
+            directory,
             self.config.palette(),
             self.config.scrollback as usize,
             self.proxy.clone(),
         )
         .map(|session| {
             self.leave();
-            self.spawned += 1;
+            self.spawned.set(self.spawned.get() + 1);
             self.tabs.push(Tab {
                 session,
                 title: String::new(),
@@ -420,10 +476,7 @@ impl View {
         self.find();
     }
 
-    fn wake(&mut self, id: u64) {
-        let Some(index) = self.tabs.iter().position(|tab| tab.session.id() == id) else {
-            return;
-        };
+    fn wake(&mut self, index: usize) {
         if index == self.active {
             self.window.request_redraw();
             return;
@@ -441,10 +494,7 @@ impl View {
         self.deliver(clipboard, bell);
     }
 
-    fn close(&mut self, id: u64) {
-        let Some(index) = self.tabs.iter().position(|tab| tab.session.id() == id) else {
-            return;
-        };
+    fn close(&mut self, index: usize) {
         self.tabs.remove(index).session.close();
         if self.tabs.is_empty() {
             return;
@@ -996,7 +1046,7 @@ impl View {
             (Transfer::Load, Some(locations)) => {
                 match dartel_config::load(&path, &locations.state) {
                     Ok(config) => {
-                        self.apply(config);
+                        self.request = Some(Request::Apply(Box::new(config)));
                         format!("settings loaded from {}", path.display())
                     }
                     Err(error) => format!("settings were not loaded: {error}"),
@@ -1053,14 +1103,12 @@ impl View {
             Action::PreviousPrompt => self.jump(false),
             Action::NextPrompt => self.jump(true),
             Action::NewTab => {
-                if let Err(error) = self.open() {
+                if let Err(error) = self.open(self.directory()) {
                     self.notify(format!("a tab could not be opened: {error}"));
                 }
             }
-            Action::CloseTab => {
-                let id = self.session().id();
-                self.close(id);
-            }
+            Action::CloseTab => self.close(self.active),
+            Action::NewWindow => self.request = Some(Request::Window(self.directory())),
             Action::Tab1
             | Action::Tab2
             | Action::Tab3
@@ -1160,24 +1208,21 @@ impl View {
 
 impl ApplicationHandler<Signal> for App {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if matches!(cause, StartCause::ResumeTimeReached { .. })
-            && let Some(view) = &self.view
-        {
-            view.window.request_redraw();
+        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            for view in &self.views {
+                if view.deadline().is_some() {
+                    view.window.request_redraw();
+                }
+            }
         }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.view.is_some() {
+        if !self.views.is_empty() {
             return;
         }
-        match View::new(
-            event_loop,
-            self.proxy.clone(),
-            self.config.clone(),
-            self.locations.clone(),
-        ) {
-            Ok(view) => self.view = Some(view),
+        match self.view(event_loop, None) {
+            Ok(view) => self.views.push(view),
             Err(error) => {
                 eprintln!("dartel: {error}");
                 event_loop.exit();
@@ -1186,42 +1231,54 @@ impl ApplicationHandler<Signal> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, signal: Signal) {
-        let Some(view) = &mut self.view else {
+        let (Signal::Wake(id) | Signal::Exit(id)) = signal;
+        let Some((window, tab)) = self.locate(id) else {
             return;
         };
         match signal {
-            Signal::Wake(id) => view.wake(id),
-            Signal::Exit(id) => view.close(id),
+            Signal::Wake(_) => self.views[window].wake(tab),
+            Signal::Exit(_) => self.views[window].close(tab),
         }
-        self.finish(event_loop);
+        self.finish(event_loop, window);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(view) = &mut self.view else {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let Some(index) = self.views.iter().position(|view| view.window.id() == id) else {
             return;
         };
+        let view = &mut self.views[index];
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                for tab in view.tabs.drain(..) {
+                    tab.session.close();
+                }
+            }
             WindowEvent::Resized(size) => view.resize(size),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => view.rescale(scale_factor),
             WindowEvent::RedrawRequested => view.redraw(),
             WindowEvent::Focused(focused) => view.focus(focused),
             WindowEvent::ModifiersChanged(modifiers) => view.modifiers = modifiers,
-            WindowEvent::KeyboardInput { event, .. } => view.key(&event),
+            WindowEvent::KeyboardInput { event, .. } => {
+                view.key(&event);
+                if let Some(request) = view.request.take() {
+                    self.serve(event_loop, index, request);
+                }
+            }
             WindowEvent::Ime(ime) => view.ime(ime),
             WindowEvent::MouseWheel { delta, .. } => view.wheel(delta),
             WindowEvent::CursorMoved { position, .. } => view.point(position),
             WindowEvent::MouseInput { state, button, .. } => view.press(button, state),
             _ => {}
         }
-        self.finish(event_loop);
+        self.finish(event_loop, index);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(
-            self.view
-                .as_ref()
-                .and_then(View::deadline)
+            self.views
+                .iter()
+                .filter_map(View::deadline)
+                .min()
                 .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
         );
     }

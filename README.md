@@ -10,7 +10,7 @@ Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With 
 
 - GPU rendering with wgpu, one draw call for a frame of text
 - VT parser that scans runs of printable ASCII with NEON or SSE2
-- Tabs in one window, with a tab bar that Dartel draws
+- Several windows, each with its own tabs and a tab bar that Dartel draws
 - Settings in a TOML file that is loaded and saved on request
 - Scrollback with literal and regex search, and a bar on the right edge that shows the position while the view is scrolled back
 - Lines rewrap when the window width changes
@@ -47,6 +47,7 @@ On Linux, Dartel needs a Vulkan or OpenGL ES driver, and copy and paste use `wl-
 | Scroll to the previous or the next prompt | Command+Up, Command+Down | Ctrl+Shift+Up, Ctrl+Shift+Down | `previous-prompt`, `next-prompt` |
 | Open a tab | Command+T | Ctrl+Shift+T | `new-tab` |
 | Close the tab | Command+W | Ctrl+Shift+W | `close-tab` |
+| Open a window | Command+N | Ctrl+Shift+N | `new-window` |
 | Select one of the first nine tabs | Command+1 to Command+9 | Ctrl+Shift+1 to Ctrl+Shift+9 | `tab-1` to `tab-9` |
 | Make the font larger or smaller | Command+=, Command+- | Ctrl+Shift+=, Ctrl+Shift+- | `zoom-in`, `zoom-out` |
 | Return to the font size of the settings | Command+0 | Ctrl+Shift+0 | `zoom-reset` |
@@ -68,11 +69,15 @@ The default of `zoom-in` is written `cmd++` on macOS and `ctrl+shift++` on Linux
 
 While the search prompt is open, Enter moves to the previous match, Shift+Enter moves to the next match, and Escape closes the prompt. A query is a regex, and it is matched as plain text when it does not compile. Matching ignores case unless the query contains an uppercase letter.
 
-A font size shortcut changes the size by one point within the range of the settings, 4 to 96. The next start uses the size of the last load again, and a save in the window writes the size in use.
+A font size shortcut changes the size of the window it is pressed in by one point within the range of the settings, 4 to 96. The next start uses the size of the last load again, and a save in the window writes the size in use in that window.
 
 ## Tabs
 
-A new tab starts a login shell in the directory of the active tab when its shell reported one with OSC 7, and in the home directory otherwise. The tab bar appears while two or more tabs are open, and a click on a tab selects it. A tab closes when its shell exits or on the close shortcut, and the window closes with the last tab. A tab shows its number and the title that the shell set.
+A new tab starts a login shell in the directory of the active tab when its shell reported one with OSC 7, and in the home directory otherwise. The tab bar appears while two or more tabs are open, and a click on a tab selects it. A tab closes when its shell exits or on the close shortcut, and the window closes with its last tab. A tab shows its number and the title that the shell set.
+
+## Windows
+
+A new window starts a login shell in the directory of the active tab of the window the shortcut was pressed in, by the same rule as a new tab. It opens with the `window.columns` and `window.lines` of the settings. Each window has its own tabs, selection, search, prompts, notices, and font size. Closing a window ends the shells of all its tabs as closing each tab would, and Dartel exits when the last window closes.
 
 ## Selection
 
@@ -89,7 +94,7 @@ A shell tells Dartel where prompts and output are by printing these sequences.
 | `OSC 133 ; A` | A prompt starts | The prompt shortcuts scroll to the previous and the next prompt |
 | `OSC 133 ; C` | The output of a command starts | The output shortcut copies the output of the last command |
 | `OSC 133 ; D ; code` | The command ended with this exit code | A bar in the bright red color marks the prompt of a command whose code is not 0 |
-| `OSC 7 ; file://host/path` | The working directory | A new tab starts there when the host is this machine |
+| `OSC 7 ; file://host/path` | The working directory | A new tab or window starts there when the host is this machine |
 
 The OSC 133 marks are ignored on the alternate screen.
 
@@ -160,7 +165,7 @@ dartel config load [FILE]
 
 `FILE` defaults to `$XDG_CONFIG_HOME/dartel/dartel.toml`, or `~/.config/dartel/dartel.toml` when the variable is unset. The kept result lives in `$XDG_STATE_HOME/dartel/settings.bin`, or `~/.local/state/dartel/settings.bin`. Both platforms use these paths.
 
-In the window, Command+S and Command+L on macOS, or Ctrl+Shift+S and Ctrl+Shift+L on Linux, open a prompt with the default path. Enter confirms and Escape cancels. A load in the window applies the font, the fallback fonts, the padding, the colors, and the shortcuts at once. The scrollback limit applies to tabs opened after the load, and the window size applies at the next start.
+In the window, Command+S and Command+L on macOS, or Ctrl+Shift+S and Ctrl+Shift+L on Linux, open a prompt with the default path. Enter confirms and Escape cancels. A load in a window applies the font, the fallback fonts, the padding, the colors, and the shortcuts to every open window at once. The scrollback limit applies to tabs opened after the load, and the window size applies to windows opened after the load. Windows opened after the load use the loaded settings.
 
 A file may leave out any key, and a missing key keeps its default. An unknown key, a wrong type, or a value outside its range stops the load with the line number, and the kept result stays as it was.
 
@@ -212,6 +217,7 @@ previous-prompt = "cmd+up"
 next-prompt = "cmd+down"
 new-tab = "cmd+t"
 close-tab = "cmd+w"
+new-window = "cmd+n"
 tab-1 = "cmd+1"
 tab-2 = "cmd+2"
 tab-3 = "cmd+3"
