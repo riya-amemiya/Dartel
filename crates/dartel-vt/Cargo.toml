@@ -1,0 +1,11 @@
+[package]
+name = "dartel-vt"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[dependencies]
+memchr.workspace = true
+
+[lints]
+workspace = true

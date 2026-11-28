@@ -1,66 +1,50 @@
 # Architecture
 
-Dartel is a terminal emulator split into two crates. `dartel-core` turns the
-bytes a shell writes into terminal state and has no window or GPU dependency.
-`dartel` owns the window, draws that state with the GPU, and turns input events
-back into bytes.
+Dartel is a terminal emulator split into seven crates. Five library crates
+turn the bytes a shell writes into terminal state and have no window or GPU
+dependency. `dartel-render` draws that state with the GPU, and the `dartel`
+binary owns the window, the tabs, and the input.
 
 ## Crates and modules
 
+An arrow points from a crate to a crate it depends on.
+
 ```mermaid
 flowchart TD
-    subgraph bin["dartel, the binary crate"]
-        app["app"]
-        session["session"]
-        scene["scene"]
-        gpu["gpu"]
-        font["font"]
-        input["input"]
-        clipboard["clipboard"]
-    end
-    subgraph core["dartel-core, the library crate"]
-        pty["pty"]
-        vt["vt"]
-        scan["scan"]
-        term["term"]
-        search["search"]
-    end
-    app --> session
-    app --> scene
-    app --> gpu
-    app --> input
-    app --> clipboard
-    scene --> font
-    scene --> gpu
-    scene --> term
-    session --> pty
-    session --> vt
-    session --> term
-    vt --> scan
-    term --> vt
+    dartel["dartel, the binary"]
+    render["dartel-render"]
+    config["dartel-config"]
+    pty["dartel-pty"]
+    term["dartel-term"]
+    search["dartel-search"]
+    vt["dartel-vt"]
+    dartel --> render
+    dartel --> config
+    dartel --> pty
+    dartel --> term
+    dartel --> search
+    dartel --> vt
+    render --> term
+    config --> term
     term --> search
+    term --> vt
 ```
 
-| Module | Crate | Responsibility |
+| Crate | Modules | Responsibility |
 | --- | --- | --- |
-| `scan` | `dartel-core` | Length of the leading run of printable ASCII, with NEON, SSE2, and scalar implementations |
-| `vt` | `dartel-core` | VT state machine that calls a `Perform` implementation |
-| `term` | `dartel-core` | Screen, scrollback, styles, modes, and the `Perform` implementation |
-| `search` | `dartel-core` | Literal and regex search over a byte buffer |
-| `pty` | `dartel-core` | PTY allocation, login shell spawn, resize |
-| `session` | `dartel` | Reader and writer threads around one PTY and one `Term` |
-| `app` | `dartel` | winit event handling, selection, search prompt, shortcuts |
-| `scene` | `dartel` | Conversion of terminal rows into quads, glyph cache |
-| `font` | `dartel` | Font discovery, fallback, rasterization |
-| `gpu` | `dartel` | wgpu surface, glyph atlas texture, the draw call |
-| `input` | `dartel` | Key event to byte sequence encoding |
-| `clipboard` | `dartel` | Clipboard access through the platform commands |
+| `dartel-vt` | `lib`, `params`, `utf8`, `scan` | VT state machine that calls a `Perform` implementation, and the length of the leading run of printable ASCII with NEON, SSE2, and scalar implementations |
+| `dartel-search` | `lib` | Literal and regex search over a byte buffer |
+| `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `modes`, `charset` | Screen, scrollback, styles, modes, and the `Perform` implementation |
+| `dartel-pty` | `lib` | PTY allocation, login shell spawn in the home directory, resize |
+| `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
+| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, font discovery and rasterization, the wgpu surface and draw call |
+| `dartel` | `main`, `app`, `session`, `input`, `clipboard` | The `config` subcommands, winit event handling, tabs, selection, prompts, shortcuts, the threads around each PTY, key encoding, and the clipboard |
 
 ## Threads and data flow
 
-One session runs three threads. The reader thread parses output straight into
-the shared `Term`, so no byte is copied into a channel between the PTY and the
-parser.
+Each tab owns one session, and one session runs three threads. The reader
+thread parses output straight into the shared `Term`, so no byte is copied into
+a channel between the PTY and the parser.
 
 ```mermaid
 sequenceDiagram
@@ -92,9 +76,87 @@ sequenceDiagram
   frame.
 
 The UI thread sleeps in `ControlFlow::Wait`. It switches to
-`ControlFlow::WaitUntil` only while a cursor blink or a synchronized-update
-timeout is pending. A frame is skipped while the application holds
-synchronized update mode, for at most 150 ms.
+`ControlFlow::WaitUntil` only while a cursor blink, a synchronized-update
+timeout, or a notice is pending. A frame is skipped while the application
+holds synchronized update mode, for at most 150 ms.
+
+## Tabs
+
+One window holds a list of tabs and draws the active one. A tab is a session
+with its own title, selection, and search state. The window, the `Gpu`, and
+the `Scene` are shared by all tabs.
+
+```mermaid
+flowchart TD
+    key["Command+T or Ctrl+Shift+T"] --> spawn["Spawn a session with the next id"]
+    spawn --> active["The new tab becomes the active tab"]
+    click["Click on a tab"] --> active
+    active --> stale["Scene drops its cached rows"]
+    wake["Signal Wake with a session id"] --> which{"Session of the active tab"}
+    which -- yes --> frame["Request a frame"]
+    which -- no --> drain["Take the title, the clipboard text, and the bell"]
+    exit["Signal Exit with a session id"] --> close["Remove the tab and reap the shell"]
+    close --> left{"Tabs left"}
+    left -- yes --> active
+    left -- no --> quit["Exit the event loop"]
+```
+
+- Every session has an id, and `Signal::Wake` and `Signal::Exit` carry it, so
+  a signal finds its tab after other tabs have closed.
+- A wake-up from a background tab draws no terminal content. The UI thread
+  takes the title change, the clipboard request, and the bell from that `Term`
+  and redraws only when the tab label changed.
+- The tab bar is drawn while two or more tabs are open. It takes one cell
+  height plus the padding at the top of the window, so opening the second tab
+  and closing it resize every session.
+- Every session is resized with the window, so a background tab has the right
+  size when it becomes active.
+- Closing a tab calls `Session::close`. The shell is reaped at once when it has
+  exited, and on a `dartel-reap` thread otherwise.
+
+## Settings
+
+`dartel-config` holds the settings. The TOML file is read only when the user
+asks for it, and the result is kept in a binary state file that start-up
+decodes without parsing text.
+
+```mermaid
+flowchart LR
+    file["TOML file"] -- "load" --> parse["toml parse and Config from_toml"]
+    parse --> state["State file, written by Config encode"]
+    parse --> live["Running window, through View apply"]
+    state -- "start-up, Config decode" --> config["Config"]
+    config -- "save, Config to_toml" --> file
+```
+
+- `toml::parse` is a single pass over the bytes of the input. Keys and
+  unescaped strings borrow from the input. A table is a vector of entries in
+  file order, and each entry records its line for error messages.
+- The parser follows TOML 1.0 and reads tables, arrays of tables, dotted keys,
+  inline tables, arrays, the four string forms, integers in four bases, floats,
+  booleans, and date-times. A date-time is checked for its shape and the range
+  of each field and is kept as text. Nesting is limited to 64 levels.
+- The parser was run over the TOML 1.0 file list of toml-test, as packaged in
+  `toml-test-data` 2.14.1. It accepts the 208 valid cases with the expected
+  values and rejects the 501 invalid cases. The cases with invalid UTF-8 are
+  rejected when the file is read as a string, before the parser runs. The
+  corpus is not a dependency of this repository.
+- `Config::from_toml` starts from the defaults and rejects an unknown key, a
+  wrong type, and a value outside its range, each with the line number.
+- `Config::encode` writes a magic that includes a format number, the fixed
+  width fields in little-endian order, and the font family. `Config::decode`
+  returns `None` for another magic, a short input, or a value outside its
+  range, and start-up then uses the defaults.
+- `Locations::resolve` places the TOML file under `XDG_CONFIG_HOME` and the
+  state file under `XDG_STATE_HOME`, with `~/.config` and `~/.local/state` as
+  fallbacks on both platforms.
+- `save` and `load` are the only writers. The `dartel config save` and
+  `dartel config load` subcommands and the two prompts in the window call the
+  same functions.
+- A load in the window rebuilds the `Scene` for the font and the padding, sets
+  the palette of every `Term` through `Term::set_palette`, and resizes every
+  session. The scrollback limit applies to tabs opened after the load, and the
+  window size in cells applies at the next start.
 
 ## Parsing
 
@@ -271,15 +333,21 @@ flowchart TD
 - `Scene` caches the background quads and glyph quads of each line. A frame
   rebuilds only the lines that `Damage` reports.
 - Overlays are appended after the cached quads on every frame. They are search
-  matches, the selection, the cursor, the search prompt, and the IME preedit
-  text.
+  matches, the selection, the cursor, the banner on the last line, the IME
+  preedit text, and the tab bar. The banner shows the search prompt, a settings
+  prompt, or a notice, and keeps the end of a text that is wider than the
+  window.
+- The cached quads of the lines start below the tab bar. Showing or hiding the
+  bar marks every line stale.
 - The glyph atlas is one 2048 by 2048 RGBA texture filled shelf by shelf. When
   it is full, the glyph cache is dropped and the visible lines are rasterized
   again.
 - Glyphs for ASCII are cached in an array indexed by face and byte. Other
   glyphs are cached in a `HashMap` keyed by character and face.
 - `font::Fonts` loads four faces of one family and finds a fallback face per
-  character on first use. Color glyphs are stored premultiplied.
+  character on first use. The family is the one in the settings when it is
+  installed, and the platform list otherwise. Color glyphs are stored
+  premultiplied.
 - The fragment shader reads the atlas with `textureLoad`, so no sampler is
   bound. The surface uses a non-sRGB format and premultiplied alpha blending.
 
@@ -287,10 +355,14 @@ flowchart TD
 
 - `input::encode` turns a key event into bytes, using the terminal modes for
   application cursor keys.
-- Shortcuts are handled before encoding. Paste, copy, and search use Command
-  on macOS and Ctrl+Shift on Linux.
+- Shortcuts are handled before encoding. Paste, copy, search, a new tab, and
+  the two settings prompts use Command on macOS and Ctrl+Shift on Linux.
+- A settings prompt takes keys before the search prompt, and the search prompt
+  takes them before the shell.
 - Mouse events are reported to the application when it enabled a mouse mode,
   in SGR or X10 encoding. Holding Shift keeps the event for local selection.
+- A press on the tab bar selects a tab and is never reported or used for
+  selection, and neither is its release.
 - When the application enabled bracketed paste, paste removes `ESC` from the
   text and wraps it in the markers. Otherwise it converts line breaks to
   carriage returns.
@@ -303,7 +375,7 @@ flowchart TD
 | --- | --- | --- |
 | Printable ASCII scan | NEON | SSE2 |
 | wgpu backend | Metal | Vulkan or GLES |
-| Primary font | Menlo, then Monaco | DejaVu Sans Mono, then Liberation Mono |
+| Default font family | Menlo, then Monaco | DejaVu Sans Mono, then Liberation Mono |
 | Clipboard | `pbpaste`, `pbcopy` | `wl-paste` and `wl-copy`, then `xclip` |
 | Shortcut modifier | Command | Ctrl+Shift |
 | Meta key | Left Option | Alt |
@@ -317,11 +389,12 @@ Dartel cannot depend on it. These designs were rewritten for Dartel instead.
 
 | happy-cracking source under `src/hc_internal/` | Dartel use |
 | --- | --- |
-| Bitmask scans in `grep/searcher/bitcount.rs` | `scan::printable_run` |
-| Maximal-subpart UTF-8 decoding in `grep/bytes.rs` | `vt::utf8` |
-| Literal fast path in `grep/regex/literal.rs` | `search::Query` engine selection |
-| Line-aligned chunks in `grep/searcher/parallel.rs` | `search::find_all` |
-| Thread cap of 6 on macOS in `walker/walk.rs` | `search` worker count |
+| Bitmask scans in `grep/searcher/bitcount.rs` | `dartel_vt::scan::printable_run` |
+| Maximal-subpart UTF-8 decoding in `grep/bytes.rs` | `utf8` in `dartel-vt` |
+| Literal fast path in `grep/regex/literal.rs` | `dartel_search::Query` engine selection |
+| Line-aligned chunks in `grep/searcher/parallel.rs` | `dartel_search::find_all` |
+| Thread cap of 6 on macOS in `walker/walk.rs` | `dartel-search` worker count |
 
-`umt_rust` is a direct dependency. `umt_hexa_to_rgba` parses OSC color
-specifications and `umt_from_base64` decodes OSC 52 clipboard payloads.
+`umt_rust` is a direct dependency of `dartel-term`. `umt_hexa_to_rgba` parses
+OSC color specifications and the colors of the settings file, and
+`umt_from_base64` decodes OSC 52 clipboard payloads.

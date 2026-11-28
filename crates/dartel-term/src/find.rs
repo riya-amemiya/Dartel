@@ -1,5 +1,6 @@
+use dartel_search::{Query, find_all};
+
 use super::{Row, Term};
-use crate::search::{self, Query};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Point {
@@ -68,7 +69,7 @@ impl Term {
                 bytes.push(b'\n');
             }
         }
-        search::find_all(query, &bytes, limit)
+        find_all(query, &bytes, limit)
             .into_iter()
             .map(|found| Span {
                 start: self.locate(&starts, found.start()),

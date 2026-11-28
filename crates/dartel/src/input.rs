@@ -1,4 +1,4 @@
-use dartel_core::term::Modes;
+use dartel_term::Modes;
 use winit::event::{KeyEvent, Modifiers};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;

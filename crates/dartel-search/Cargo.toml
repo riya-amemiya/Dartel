@@ -1,0 +1,12 @@
+[package]
+name = "dartel-search"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[dependencies]
+memchr.workspace = true
+regex.workspace = true
+
+[lints]
+workspace = true

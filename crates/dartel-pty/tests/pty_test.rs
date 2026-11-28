@@ -1,12 +1,13 @@
 #![cfg(unix)]
 
+use std::env;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use dartel_core::pty::{Pty, Size, login_shell};
+use dartel_pty::{Pty, Size, login_shell, start_directory};
 
 const SIZE: Size = Size {
     lines: 24,
@@ -87,6 +88,12 @@ fn try_wait_reports_the_exit_status() {
 }
 
 #[test]
+fn wait_blocks_until_the_child_exits() {
+    let mut pty = Pty::spawn(shell("exit 5"), SIZE).unwrap();
+    assert_eq!(pty.wait().unwrap().code(), Some(5));
+}
+
+#[test]
 fn spawn_fails_for_a_missing_program() {
     assert!(Pty::spawn(Command::new("/nonexistent/dartel-shell"), SIZE).is_err());
 }
@@ -109,6 +116,43 @@ fn login_shell_sets_the_terminal_environment() {
         variable("COLORTERM").as_deref(),
         Some(OsStr::new("truecolor"))
     );
+}
+
+#[test]
+fn start_directory_is_the_home_directory_when_it_exists() {
+    assert_eq!(
+        start_directory(Some(env::temp_dir().into_os_string())),
+        Some(env::temp_dir())
+    );
+}
+
+#[test]
+fn start_directory_is_absent_without_a_home() {
+    assert_eq!(start_directory(None), None);
+}
+
+#[test]
+fn start_directory_is_absent_when_home_is_not_a_directory() {
+    assert_eq!(
+        start_directory(Some("/nonexistent/dartel-home".into())),
+        None
+    );
+}
+
+#[test]
+fn login_shell_starts_in_the_home_directory() {
+    assert_eq!(
+        login_shell().get_current_dir().map(Path::to_path_buf),
+        start_directory(env::var_os("HOME"))
+    );
+}
+
+#[test]
+fn spawned_child_runs_in_the_command_directory() {
+    let mut command = shell("pwd; printf done");
+    command.current_dir("/");
+    let pty = Pty::spawn(command, SIZE).unwrap();
+    assert!(read_until(&mut pty.reader().unwrap(), "done").contains("/\r\n"));
 }
 
 #[test]

@@ -90,13 +90,19 @@ fn premultiplied(mut pixels: Vec<u8>) -> Vec<u8> {
 }
 
 impl Fonts {
-    pub fn new(size: f32) -> Option<Fonts> {
+    pub fn new(family: &str, size: f32) -> Option<Fonts> {
         let mut database = Database::new();
         database.load_system_fonts();
         let regular = database
             .query(&Query {
-                families: FAMILIES,
+                families: &[Family::Name(family)],
                 ..Query::default()
+            })
+            .or_else(|| {
+                database.query(&Query {
+                    families: FAMILIES,
+                    ..Query::default()
+                })
             })
             .or_else(|| {
                 database

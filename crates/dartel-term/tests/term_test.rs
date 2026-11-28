@@ -1,8 +1,17 @@
-use dartel_core::term::{Attrs, Color, CursorShape, Modes, Point, Rgb, Row, Span, Style, Term};
-use dartel_core::vt::Parser;
+use dartel_term::{Attrs, Color, CursorShape, Modes, Palette, Point, Rgb, Row, Span, Style, Term};
+use dartel_vt::Parser;
 
 fn term(lines: usize, cols: usize) -> Term {
     Term::new(lines, cols, 100)
+}
+
+fn tinted() -> Palette {
+    let mut palette = Palette::default();
+    palette.set_indexed(1, Rgb::new(1, 2, 3));
+    palette.foreground = Rgb::new(4, 5, 6);
+    palette.background = Rgb::new(7, 8, 9);
+    palette.cursor = Rgb::new(10, 11, 12);
+    palette
 }
 
 fn feed(term: &mut Term, input: &str) {
@@ -613,6 +622,47 @@ fn palette_entries_are_set_queried_and_reset() {
     assert_eq!(term.palette().indexed(2), Rgb::new(255, 0, 128));
     feed(&mut term, "\x1b]104\x07");
     assert_eq!(term.palette(), Term::new(1, 5, 0).palette());
+}
+
+#[test]
+fn default_palette_uses_the_fish_theme_magenta_and_bright_red() {
+    let term = term(1, 5);
+    assert_eq!(term.palette().indexed(5), Rgb::new(0xBD, 0x7B, 0xCD));
+    assert_eq!(term.palette().indexed(9), Rgb::new(0xDF, 0x6C, 0x5A));
+}
+
+#[test]
+fn set_palette_replaces_the_current_colors() {
+    let mut term = term(1, 5);
+    term.set_palette(tinted());
+    assert_eq!(term.palette(), &tinted());
+}
+
+#[test]
+fn set_palette_becomes_the_target_of_palette_resets() {
+    let mut term = term(1, 5);
+    term.set_palette(tinted());
+    feed(
+        &mut term,
+        "\x1b]4;1;#000000\x07\x1b]10;#000000\x07\x1b]104\x07\x1b]110\x07",
+    );
+    assert_eq!(term.palette(), &tinted());
+}
+
+#[test]
+fn set_palette_survives_a_full_reset() {
+    let mut term = term(1, 5);
+    term.set_palette(tinted());
+    feed(&mut term, "\x1b]4;1;#000000\x07\x1bc");
+    assert_eq!(term.palette(), &tinted());
+}
+
+#[test]
+fn set_palette_damages_every_line() {
+    let mut term = term(2, 5);
+    term.reset_damage();
+    term.set_palette(tinted());
+    assert!(term.damage().is_full());
 }
 
 #[test]

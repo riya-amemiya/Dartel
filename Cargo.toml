@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/dartel", "crates/dartel-core"]
+members = [
+    "crates/dartel",
+    "crates/dartel-config",
+    "crates/dartel-pty",
+    "crates/dartel-render",
+    "crates/dartel-search",
+    "crates/dartel-term",
+    "crates/dartel-vt",
+]
 resolver = "3"
 
 [workspace.package]
@@ -8,7 +16,12 @@ version = "0.1.0"
 repository = "https://github.com/riya-amemiya/Dartel"
 
 [workspace.dependencies]
-dartel-core = { path = "crates/dartel-core" }
+dartel-config = { path = "crates/dartel-config" }
+dartel-pty = { path = "crates/dartel-pty" }
+dartel-render = { path = "crates/dartel-render" }
+dartel-search = { path = "crates/dartel-search" }
+dartel-term = { path = "crates/dartel-term" }
+dartel-vt = { path = "crates/dartel-vt" }
 fontdb = "=0.24.0"
 memchr = "=2.8.3"
 regex = "=1.13.2"

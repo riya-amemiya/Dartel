@@ -1,17 +1,14 @@
 [package]
-name = "dartel-core"
+name = "dartel-term"
 edition.workspace = true
 version.workspace = true
 repository.workspace = true
 
 [dependencies]
-memchr.workspace = true
-regex.workspace = true
+dartel-search.workspace = true
+dartel-vt.workspace = true
 umt_rust.workspace = true
 unicode-width.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-rustix.workspace = true
 
 [lints]
 workspace = true

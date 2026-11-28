@@ -19,56 +19,72 @@ Dartel/
 ├── rustfmt.toml              # Formatting options that stable rustfmt accepts
 ├── .mergify.yml              # Merge protection and merge queue rules
 ├── crates/
-│   ├── dartel-core/          # Library crate with no window or GPU dependency
+│   ├── dartel-vt/            # VT parser, depends on memchr
 │   │   ├── src/
-│   │   │   ├── lib.rs        # Module exports
-│   │   │   ├── pty.rs        # PTY allocation, login shell spawn, resize
-│   │   │   ├── scan/         # Length of the leading printable ASCII run
-│   │   │   │   ├── mod.rs    # Picks the implementation by target feature
-│   │   │   │   ├── neon.rs   # aarch64
-│   │   │   │   ├── scalar.rs # Fallback and reference behavior
-│   │   │   │   └── sse2.rs   # x86_64
-│   │   │   ├── search/
-│   │   │   │   └── mod.rs    # Literal and regex queries, parallel scan
-│   │   │   ├── term/
-│   │   │   │   ├── mod.rs     # Term, cursor view, damage, public accessors
-│   │   │   │   ├── cell.rs    # 8-byte cell
-│   │   │   │   ├── charset.rs # DEC special graphics
-│   │   │   │   ├── color.rs   # Rgb, Color, Palette, xterm 256-color table
-│   │   │   │   ├── find.rs    # Scrollback search and text extraction
-│   │   │   │   ├── grid.rs    # Rows, scrollback, scrolling, resize, reflow
-│   │   │   │   ├── modes.rs   # Terminal mode flags
-│   │   │   │   ├── osc.rs     # OSC title, palette, and clipboard sequences
-│   │   │   │   ├── perform.rs # vt::Perform implementation, CSI and ESC dispatch
-│   │   │   │   ├── row.rs     # Row edits, wide characters, combining marks
-│   │   │   │   ├── screen.rs  # Writing, cursor movement, erase, alternate screen
-│   │   │   │   ├── sgr.rs     # SGR attributes and colors
-│   │   │   │   └── style.rs   # Style interning
-│   │   │   └── vt/
-│   │   │       ├── mod.rs    # Parser state machine and the Perform trait
-│   │   │       ├── params.rs # CSI parameters and subparameters
-│   │   │       └── utf8.rs   # UTF-8 decoder
-│   │   └── tests/            # Integration tests, one file per module
-│   │       ├── pty_test.rs
+│   │   │   ├── lib.rs        # Parser state machine and the Perform trait
+│   │   │   ├── params.rs     # CSI parameters and subparameters
+│   │   │   ├── utf8.rs       # UTF-8 decoder
+│   │   │   └── scan/         # Length of the leading printable ASCII run
+│   │   │       ├── mod.rs    # Picks the implementation by target feature
+│   │   │       ├── neon.rs   # aarch64
+│   │   │       ├── scalar.rs # Fallback and reference behavior
+│   │   │       └── sse2.rs   # x86_64
+│   │   └── tests/
 │   │       ├── scan_test.rs
-│   │       ├── search_test.rs
-│   │       ├── term_test.rs
 │   │       └── vt_test.rs
+│   ├── dartel-search/        # Search over a byte buffer
+│   │   ├── src/
+│   │   │   └── lib.rs        # Literal and regex queries, parallel scan
+│   │   └── tests/
+│   │       └── search_test.rs
+│   ├── dartel-term/          # Terminal state
+│   │   ├── src/
+│   │   │   ├── lib.rs        # Term, cursor view, damage, public accessors
+│   │   │   ├── cell.rs       # 8-byte cell
+│   │   │   ├── charset.rs    # DEC special graphics
+│   │   │   ├── color.rs      # Rgb, Color, Palette, xterm 256-color table
+│   │   │   ├── find.rs       # Scrollback search and text extraction
+│   │   │   ├── grid.rs       # Rows, scrollback, scrolling, resize, reflow
+│   │   │   ├── modes.rs      # Terminal mode flags
+│   │   │   ├── osc.rs        # OSC title, palette, and clipboard sequences
+│   │   │   ├── perform.rs    # Perform implementation, CSI and ESC dispatch
+│   │   │   ├── row.rs        # Row edits, wide characters, combining marks
+│   │   │   ├── screen.rs     # Writing, cursor movement, erase, alternate screen
+│   │   │   ├── sgr.rs        # SGR attributes and colors
+│   │   │   └── style.rs      # Style interning
+│   │   └── tests/
+│   │       ├── find_test.rs  # Term::search
+│   │       └── term_test.rs
+│   ├── dartel-pty/           # Unix only
+│   │   ├── src/
+│   │   │   └── lib.rs        # PTY allocation, login shell spawn, resize
+│   │   └── tests/
+│   │       └── pty_test.rs
+│   ├── dartel-config/        # Settings
+│   │   ├── src/
+│   │   │   ├── lib.rs        # Config, TOML and state codecs, locations, save, load
+│   │   │   └── toml.rs       # TOML parser
+│   │   └── tests/
+│   │       ├── config_test.rs
+│   │       └── toml_test.rs
+│   ├── dartel-render/        # GPU renderer
+│   │   └── src/
+│   │       ├── lib.rs        # Exports
+│   │       ├── font.rs       # Font discovery, fallback, rasterization
+│   │       ├── gpu.rs        # wgpu surface, glyph atlas, draw call
+│   │       ├── scene.rs      # Rows to quads, glyph cache, overlays, tab bar
+│   │       └── shader.wgsl   # Vertex and fragment shader
 │   └── dartel/               # Binary crate
 │       ├── macos/
 │       │   ├── Info.plist    # Bundle metadata for Dartel.app
 │       │   ├── icon.png      # 1024 px rendering of icon.svg, source of Dartel.icns
 │       │   └── icon.svg      # Application icon drawing
 │       └── src/
-│           ├── main.rs       # Event loop start
-│           ├── app.rs        # winit handler, selection, search prompt, shortcuts
+│           ├── main.rs       # config subcommands, event loop start
+│           ├── app.rs        # winit handler, tabs, selection, prompts, shortcuts
 │           ├── clipboard.rs  # Clipboard through the platform commands
-│           ├── font.rs       # Font discovery, fallback, rasterization
-│           ├── gpu.rs        # wgpu surface, glyph atlas, draw call
 │           ├── input.rs      # Key event to byte sequence encoding
-│           ├── scene.rs      # Rows to quads, glyph cache, overlays
-│           ├── session.rs    # Reader and writer threads around the PTY
-│           └── shader.wgsl   # Vertex and fragment shader
+│           └── session.rs    # Reader and writer threads around the PTY
 ├── docs/
 │   └── architecture.md       # Design notes with diagrams
 └── .github/
@@ -104,6 +120,14 @@ cargo run -p dartel
 cargo build --release -p dartel
 ```
 
+Write the settings in use to a TOML file, or load a TOML file and keep it for
+later starts:
+
+```sh
+cargo run -p dartel -- config save [FILE]
+cargo run -p dartel -- config load [FILE]
+```
+
 ## Toolchain
 
 CI installs the newest stable toolchain on every run. A new stable release can
@@ -135,8 +159,11 @@ Build and test for that target run on the macOS CI job.
   trailing comment, for example `actions/checkout@<hash> # v7.0.1`.
 - Express platform differences with `cfg`, and keep the macOS and Linux
   variants of a constant or function next to each other.
-- `unsafe` appears in five files: `scan/neon.rs`, `scan/sse2.rs`, `pty.rs`,
-  `gpu.rs`, and `font.rs`. Keep new code safe.
+- `unsafe` appears in five files: `scan/neon.rs` and `scan/sse2.rs` in
+  `dartel-vt`, `lib.rs` in `dartel-pty`, and `gpu.rs` and `font.rs` in
+  `dartel-render`. Keep new code safe.
+- A library crate has no dependency on the window. `dartel-render` is the only
+  library crate that depends on `wgpu` and `winit`.
 - Code, tests, commit messages, and documentation are written in English.
 - Commit messages follow Conventional Commits and are a single title line.
 
@@ -155,17 +182,28 @@ Build and test for that target run on the macOS CI job.
   under that lock short and never block on I/O there.
 - The NEON and SSE2 implementations of `scan::printable_run` return the same
   value as the scalar one for every input.
+- Every tab is resized with the window, and `Scene::invalidate` runs when the
+  active tab changes, because `Scene` caches the rows of one `Term`.
+- The TOML file is parsed only by `dartel_config::load`. Start-up reads the
+  state file through `Config::decode`. A change to the fields of `Config`
+  changes the layout of the state file, so change the last byte of `MAGIC`
+  with it.
 
 ## Testing Conventions
 
-- Integration tests live in `crates/dartel-core/tests/` as `{module}_test.rs`.
-  Unit tests inside a module are reserved for private helpers.
+- Integration tests live in the `tests/` directory of a library crate as
+  `{module}_test.rs`. Unit tests inside a module are reserved for private
+  helpers.
 - Each test function checks one behavior and is named as a sentence, for
   example `csi_collects_semicolon_separated_parameters`.
 - Non-ASCII test data uses `\u{...}` escapes.
 - Terminal tests feed bytes through `Parser::advance` and assert on the grid,
   the cursor, or the reply bytes.
-- The `dartel` crate has no automated tests. Check it on a display.
+- A test that depends on an environment variable calls a function that takes
+  the value as an argument, such as `start_directory` and
+  `Locations::resolve`, because `std::env::set_var` is unsafe.
+- The `dartel-render` and `dartel` crates have no automated tests. Check them
+  on a display.
 
 ## Checking the Window on Linux Without a Display
 
@@ -187,9 +225,15 @@ xdotool key Return
 import -window root shot.png
 ```
 
+Without a window manager the window has no focus, so run
+`xdotool windowfocus` with the id that `xdotool search` printed before typing.
 `xdotool key ctrl+shift+f` opens the search prompt, `ctrl+shift+c` copies the
-selection, and `ctrl+shift+v` pastes. Running on macOS itself, with Metal, the
-system fonts, `pbcopy`, and the IME, cannot be checked this way.
+selection, `ctrl+shift+v` pastes, `ctrl+shift+t` opens a tab, and
+`ctrl+shift+s` and `ctrl+shift+l` open the settings prompts. Set `HOME` to a
+scratch directory and unset `XDG_CONFIG_HOME` and `XDG_STATE_HOME` for the
+run, so the settings files stay out of the real home directory. Running on
+macOS itself, with Metal, the system fonts, `pbcopy`, and the IME, cannot be
+checked this way.
 
 ## Application Icon
 
@@ -230,7 +274,7 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
 | `regex` | Regex search over scrollback |
 | `rustix` | PTY, termios, and process calls |
 | `swash` | Glyph rasterization |
-| `umt_rust` | Hex color parsing and base64 decoding for OSC sequences |
+| `umt_rust` | Hex color parsing for OSC sequences and settings, base64 decoding for OSC 52 |
 | `unicode-width` | Character cell width |
 | `wgpu` | GPU rendering |
 | `winit` | Window and input events |
@@ -247,6 +291,10 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
   them.
 - `umt_rust` already provides hex color parsing and base64 decoding. Prefer it
   over a new dependency when it has the function.
+- The settings file has no parser dependency. `dartel-config` parses TOML in
+  `toml.rs`, and a new setting needs a field in `Config`, its key in
+  `from_toml` and `to_toml`, its bytes in `encode` and `decode`, and a row in
+  the README table.
 - A new dependency needs the maintainer's approval, an exact version pin, and
   a stated purpose.
 - Keep this file and `docs/architecture.md` current when the structure

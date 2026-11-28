@@ -245,6 +245,12 @@ impl Term {
         &self.palette
     }
 
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette.clone();
+        self.base_palette = palette;
+        self.damage.full = true;
+    }
+
     #[inline]
     #[must_use]
     pub fn modes(&self) -> Modes {

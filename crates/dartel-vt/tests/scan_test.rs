@@ -1,4 +1,4 @@
-use dartel_core::scan::printable_run;
+use dartel_vt::scan::printable_run;
 
 fn naive(bytes: &[u8]) -> usize {
     bytes

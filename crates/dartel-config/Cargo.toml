@@ -1,0 +1,11 @@
+[package]
+name = "dartel-config"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dartel-term.workspace = true
+
+[lints]
+workspace = true
