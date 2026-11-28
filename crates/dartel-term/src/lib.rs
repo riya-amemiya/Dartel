@@ -91,6 +91,7 @@ struct Outbox {
 pub struct Damage {
     lines: Vec<bool>,
     full: bool,
+    shift: usize,
 }
 
 impl Damage {
@@ -98,6 +99,7 @@ impl Damage {
         Damage {
             lines: vec![false; lines],
             full: true,
+            shift: 0,
         }
     }
 
@@ -111,6 +113,23 @@ impl Damage {
     #[must_use]
     pub fn line(&self, line: usize) -> bool {
         self.full || self.lines[line]
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn shift(&self) -> usize {
+        self.shift
+    }
+
+    fn scroll(&mut self, count: usize) {
+        if self.shift + count >= self.lines.len() {
+            self.full = true;
+            return;
+        }
+        self.lines.copy_within(count.., 0);
+        let kept = self.lines.len() - count;
+        self.lines[kept..].fill(true);
+        self.shift += count;
     }
 }
 
@@ -344,6 +363,7 @@ impl Term {
     pub fn reset_damage(&mut self) {
         self.damage.lines.fill(false);
         self.damage.full = false;
+        self.damage.shift = 0;
     }
 
     #[inline]

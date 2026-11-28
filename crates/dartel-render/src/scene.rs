@@ -822,12 +822,33 @@ impl Scene {
         )
     }
 
+    fn shift(&mut self, term: &Term) {
+        let shift = term.damage().shift();
+        if shift == 0 || self.stale || term.damage().is_full() {
+            return;
+        }
+        self.rows.rotate_left(shift);
+        let rise = (shift as u32 * self.fonts.metrics().height) as i16;
+        let kept = self.rows.len() - shift;
+        for row in &mut self.rows[..kept] {
+            for quad in row
+                .backgrounds
+                .iter_mut()
+                .chain(&mut row.glyphs)
+                .chain(row.pictures.iter_mut().map(|(_, quad)| quad))
+            {
+                quad.rect[1] -= rise;
+            }
+        }
+    }
+
     pub fn compose(&mut self, term: &Term, overlay: &Overlay<'_>) {
         if self.rows.len() != term.lines() {
             self.rows.clear();
             self.rows.resize_with(term.lines(), Row::default);
             self.stale = true;
         }
+        self.shift(term);
         if !self.compose_rows(term) {
             self.forget_glyphs();
             self.rows.resize_with(term.lines(), Row::default);

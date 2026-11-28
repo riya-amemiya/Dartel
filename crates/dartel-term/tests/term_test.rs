@@ -1030,9 +1030,74 @@ fn damage_tracks_touched_lines_and_full_redraws() {
     assert!(!term.damage().line(0));
     assert!(term.damage().line(1));
     term.reset_damage();
-    feed(&mut term, "\x1b[3;1H\n");
+    feed(&mut term, "\x1b[1;1H\x1bM");
     assert!(term.damage().is_full());
     assert!(term.damage().line(0));
+}
+
+#[test]
+fn scrolling_the_whole_screen_shifts_the_damage() {
+    let mut term = fed(3, 10, "a\r\nb\r\nc");
+    term.reset_damage();
+    feed(&mut term, "\r\nd");
+    assert_eq!(term.damage().shift(), 1);
+    assert!(!term.damage().is_full());
+    assert_eq!(
+        [0, 1, 2].map(|line| term.damage().line(line)),
+        [false, false, true]
+    );
+}
+
+#[test]
+fn damage_of_a_changed_row_moves_up_with_a_scroll() {
+    let mut term = fed(3, 10, "a\r\nb\r\nc");
+    term.reset_damage();
+    feed(&mut term, "\x1b[2;1Hx\x1b[3;1H\n");
+    assert_eq!(
+        [0, 1, 2].map(|line| term.damage().line(line)),
+        [true, false, true]
+    );
+}
+
+#[test]
+fn scrolling_as_many_rows_as_the_screen_damages_every_row() {
+    let mut term = fed(3, 10, "a\r\nb\r\nc");
+    term.reset_damage();
+    feed(&mut term, "\n\n\n");
+    assert!(term.damage().is_full());
+}
+
+#[test]
+fn scrolling_inside_a_region_damages_every_row() {
+    let mut term = fed(4, 10, "\x1b[1;3r\x1b[3;1H");
+    term.reset_damage();
+    feed(&mut term, "\n");
+    assert!(term.damage().is_full());
+}
+
+#[test]
+fn scrolling_while_the_view_shows_history_damages_every_row() {
+    let mut term = fed(3, 10, "a\r\nb\r\nc\r\nd");
+    term.scroll_display(1);
+    term.reset_damage();
+    feed(&mut term, "\n");
+    assert!(term.damage().is_full());
+}
+
+#[test]
+fn scrolling_before_the_first_frame_leaves_the_shift_at_zero() {
+    let term = fed(3, 10, "a\r\nb\r\nc\r\nd");
+    assert!(term.damage().is_full());
+    assert_eq!(term.damage().shift(), 0);
+}
+
+#[test]
+fn reset_damage_clears_the_shift() {
+    let mut term = fed(3, 10, "a\r\nb\r\nc");
+    term.reset_damage();
+    feed(&mut term, "\n");
+    term.reset_damage();
+    assert_eq!(term.damage().shift(), 0);
 }
 
 #[test]

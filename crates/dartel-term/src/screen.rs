@@ -410,7 +410,18 @@ impl Term {
         if self.display_offset > 0 {
             self.display_offset = (self.display_offset + kept).min(self.grid.history());
         }
-        self.damage.full = true;
+        if !self.damage.full {
+            self.scroll_damage(count);
+        }
+    }
+
+    #[cold]
+    fn scroll_damage(&mut self, count: usize) {
+        if self.display_offset == 0 && self.top == 0 && self.bottom + 1 == self.grid.lines() {
+            self.damage.scroll(count);
+        } else {
+            self.damage.full = true;
+        }
     }
 
     pub(super) fn scroll_down(&mut self, count: usize) {

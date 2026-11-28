@@ -251,6 +251,12 @@ Build and test for that target run on the macOS CI job.
 - Every change to visible content marks damage through `Term::touch` or
   `damage.full`. `Scene` rebuilds only damaged lines, so a missed mark leaves
   stale pixels.
+- A linefeed that scrolls the whole screen moves the damage marks up with the
+  rows and counts the rows in `Damage::shift` instead of setting
+  `damage.full`, and `Scene` moves its cached lines by that count.
+  `Term::reset_damage` follows every `Scene::compose`, because a shift that
+  stays would move the cached lines twice. `Term::scroll_up` only reads
+  `damage.full` while it is set, so measure throughput after changing it.
 - A `StyleId` is an index into `StyleTable`, and ids change when the table is
   compacted. Nothing outside `Term` keeps a `StyleId` between frames.
 - The reader thread parses into `Term` while it holds the mutex. Keep the work
