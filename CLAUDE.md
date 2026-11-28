@@ -281,6 +281,13 @@ Build and test for that target run on the macOS CI job.
   state file through `Config::decode`. A change to the fields of `Config`
   changes the layout of the state file, so change the last byte of `MAGIC`
   with it.
+- `Config::font_fallback` holds at most 16 names of 1 to 255 bytes, because
+  the state file stores the count and each length in one byte. `from_toml`
+  and `decode` reject anything else.
+- `Fonts::discover` runs only for a character that the glyph cache and
+  `Fonts::fallbacks` do not hold, and `Fonts::preferred` holds the face ids of
+  `font.fallback` resolved once in `Fonts::new`. Keep fallback work off the
+  cached paths of `Scene::compose_row` and `Fonts::rasterize`.
 - `Config::keys` holds parsed shortcuts, and no key event parses text. An
   `Action` has an entry in `ACTION_NAMES`, `Action::ALL`, and `DEFAULT_KEYS`
   at the same index, and an arm in `View::shortcut`. Adding one changes the

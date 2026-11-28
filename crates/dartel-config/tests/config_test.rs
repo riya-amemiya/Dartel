@@ -66,6 +66,7 @@ const DEFAULT_SHORTCUTS: [&str; 24] = [
 
 const DOCUMENT: &str = "[font]
 family = \"Test Mono\"
+fallback = []
 size = 13.0
 
 [window]
@@ -239,6 +240,139 @@ fn font_settings_are_read() {
     let config = Config::from_toml("[font]\nfamily = \"Monaco\"\nsize = 15.5").unwrap();
     assert_eq!(config.font_family, "Monaco");
     assert_eq!(config.font_size, 15.5);
+}
+
+#[test]
+fn default_config_has_no_fallback_fonts() {
+    assert_eq!(Config::default().font_fallback, Vec::<String>::new());
+}
+
+#[test]
+fn font_fallback_is_read_in_its_order() {
+    assert_eq!(
+        Config::from_toml("[font]\nfallback = [\"IPAGothic\", \"Noto Sans CJK JP\"]")
+            .unwrap()
+            .font_fallback,
+        ["IPAGothic", "Noto Sans CJK JP"]
+    );
+}
+
+#[test]
+fn font_fallback_accepts_an_array_over_several_lines() {
+    assert_eq!(
+        Config::from_toml("[font]\nfallback = [\n  'IPAGothic',\n  \"Unifont\",\n]")
+            .unwrap()
+            .font_fallback,
+        ["IPAGothic", "Unifont"]
+    );
+}
+
+#[test]
+fn font_fallback_accepts_the_most_names_of_the_longest_length() {
+    let name = "x".repeat(255);
+    let config = Config::from_toml(&format!(
+        "font.fallback = [{}]",
+        vec![format!("\"{name}\""); 16].join(", ")
+    ))
+    .unwrap();
+    assert_eq!(config.font_fallback, vec![name; 16]);
+}
+
+#[test]
+fn font_fallback_counts_the_bytes_of_a_name() {
+    assert_eq!(
+        rejected(&format!("font.fallback = [\"{}\"]", "\u{3042}".repeat(86))),
+        refusal(
+            1,
+            "`font.fallback` must be an array of at most 16 strings of 1 to 255 bytes"
+        )
+    );
+}
+
+#[test]
+fn font_fallback_that_is_not_an_array_is_rejected() {
+    assert_eq!(
+        rejected("[font]\nfallback = \"IPAGothic\""),
+        refusal(
+            2,
+            "`font.fallback` must be an array of at most 16 strings of 1 to 255 bytes"
+        )
+    );
+}
+
+#[test]
+fn font_fallback_with_an_element_that_is_not_a_string_is_rejected() {
+    for element in ["1", "true", "[\"IPAGothic\"]", "{ name = \"IPAGothic\" }"] {
+        assert_eq!(
+            rejected(&format!("[font]\nfallback = [\"Unifont\", {element}]")),
+            refusal(
+                2,
+                "`font.fallback` must be an array of at most 16 strings of 1 to 255 bytes"
+            )
+        );
+    }
+}
+
+#[test]
+fn font_fallback_with_an_empty_name_is_rejected() {
+    assert_eq!(
+        rejected("[font]\nfallback = [\"IPAGothic\", \"\"]"),
+        refusal(
+            2,
+            "`font.fallback` must be an array of at most 16 strings of 1 to 255 bytes"
+        )
+    );
+}
+
+#[test]
+fn font_fallback_with_more_than_sixteen_names_is_rejected() {
+    assert_eq!(
+        rejected(&format!(
+            "font.fallback = [{}]",
+            vec!["\"IPAGothic\""; 17].join(", ")
+        )),
+        refusal(
+            1,
+            "`font.fallback` must be an array of at most 16 strings of 1 to 255 bytes"
+        )
+    );
+}
+
+#[test]
+fn font_fallback_with_a_name_longer_than_255_bytes_is_rejected() {
+    assert_eq!(
+        rejected(&format!("font.fallback = [\"{}\"]", "x".repeat(256))),
+        refusal(
+            1,
+            "`font.fallback` must be an array of at most 16 strings of 1 to 255 bytes"
+        )
+    );
+}
+
+#[test]
+fn to_toml_writes_the_fallback_fonts_as_an_array() {
+    let config = Config {
+        font_fallback: vec!["IPAGothic".to_owned(), "Noto Sans CJK JP".to_owned()],
+        ..sample()
+    };
+    assert!(
+        config
+            .to_toml()
+            .contains("\nfallback = [\"IPAGothic\", \"Noto Sans CJK JP\"]\n")
+    );
+}
+
+#[test]
+fn fallback_fonts_with_special_characters_survive_a_round_trip() {
+    let config = Config {
+        font_fallback: vec![
+            "A \"B\" \\ C\u{7}".to_owned(),
+            "\u{30e1}\u{30a4}\u{30ea}\u{30aa}".to_owned(),
+            "IPAGothic".to_owned(),
+        ],
+        ..sample()
+    };
+    assert_eq!(Config::from_toml(&config.to_toml()), Ok(config));
 }
 
 #[test]
@@ -798,9 +932,28 @@ fn load_keeps_the_keys_for_the_next_start() {
 }
 
 #[test]
+fn load_keeps_the_fallback_fonts_for_the_next_start() {
+    let directory = scratch("load-fallback");
+    let (file, state) = (
+        directory.join("dartel.toml"),
+        directory.join("settings.bin"),
+    );
+    fs::write(
+        &file,
+        "[font]\nfallback = [\"WenQuanYi Zen Hei\", \"IPAGothic\"]",
+    )
+    .unwrap();
+    let fallback = load(&file, &state).unwrap().font_fallback;
+    assert_eq!(active(&state).font_fallback, fallback);
+    assert_eq!(fallback, ["WenQuanYi Zen Hei", "IPAGothic"]);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn encoded_config_decodes_to_the_same_config() {
     let config = Config {
         font_family: "\u{30e1}\u{30a4}\u{30ea}\u{30aa}".to_owned(),
+        font_fallback: vec!["IPAGothic".to_owned(), "\u{6587}\u{6cc9}".to_owned()],
         font_size: 15.5,
         columns: 132,
         lines: 43,
@@ -840,23 +993,68 @@ fn encoded_keys_decode_to_the_same_keys() {
 #[test]
 fn encode_writes_two_bytes_for_each_action_before_the_font_family() {
     let encoded = sample().encode();
-    assert_eq!(encoded.len(), 137 + "Test Mono".len());
+    assert_eq!(encoded.len(), 138 + "Test Mono".len());
     assert_eq!(&encoded[89..91], &[6, b'v']);
     assert_eq!(&encoded[133..137], &[4, 0x84, 4, 0x85]);
 }
 
 #[test]
+fn encode_writes_the_fallback_fonts_with_their_lengths_before_the_font_family() {
+    let encoded = Config {
+        font_fallback: vec!["IPA".to_owned(), "Unifont".to_owned()],
+        ..sample()
+    }
+    .encode();
+    assert_eq!(&encoded[137..150], b"\x02\x03IPA\x07Unifont");
+    assert_eq!(&encoded[150..], b"Test Mono");
+}
+
+#[test]
+fn encoded_fallback_fonts_at_the_limits_decode_to_the_same_config() {
+    let config = Config {
+        font_fallback: vec!["x".repeat(255); 16],
+        ..sample()
+    };
+    assert_eq!(Config::decode(&config.encode()), Some(config));
+}
+
+#[test]
 fn decode_rejects_a_truncated_state() {
     let encoded = sample().encode();
-    for length in [0, 7, 15, 23, 25, 27, 31, 88, 136] {
+    for length in [0, 7, 15, 23, 25, 27, 31, 88, 136, 137] {
         assert_eq!(Config::decode(&encoded[..length]), None);
     }
 }
 
 #[test]
+fn decode_rejects_the_state_of_the_previous_format() {
+    assert_eq!(Config::decode(&patched(7, &[2])), None);
+}
+
+#[test]
+fn decode_rejects_more_than_sixteen_fallback_fonts() {
+    assert_eq!(Config::decode(&patched(137, &[17])), None);
+}
+
+#[test]
+fn decode_rejects_an_empty_fallback_font_name() {
+    assert_eq!(Config::decode(&patched(137, &[1, 0])), None);
+}
+
+#[test]
+fn decode_rejects_a_fallback_font_name_cut_by_the_end_of_the_state() {
+    assert_eq!(Config::decode(&patched(137, &[1, 9])), None);
+}
+
+#[test]
+fn decode_rejects_a_fallback_font_name_that_is_not_utf8() {
+    assert_eq!(Config::decode(&patched(137, &[1, 2, 0xFF, 0xFE])), None);
+}
+
+#[test]
 fn decode_accepts_an_empty_font_family() {
     assert_eq!(
-        Config::decode(&Config::default().encode()[..137]),
+        Config::decode(&Config::default().encode()[..138]),
         Some(Config {
             font_family: String::new(),
             ..Config::default()
@@ -937,7 +1135,7 @@ fn decode_rejects_a_scrollback_outside_the_range() {
 
 #[test]
 fn decode_rejects_a_font_family_that_is_not_utf8() {
-    assert_eq!(Config::decode(&patched(137, &[0xFF])), None);
+    assert_eq!(Config::decode(&patched(138, &[0xFF])), None);
 }
 
 #[test]

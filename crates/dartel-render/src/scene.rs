@@ -581,9 +581,14 @@ fn centering(span: i32, glyph: Glyph) -> i32 {
 
 impl Scene {
     #[must_use]
-    pub fn new(font_family: &str, font_size: f32, padding: i32) -> Option<Scene> {
+    pub fn new(
+        font_family: &str,
+        font_fallback: &[String],
+        font_size: f32,
+        padding: i32,
+    ) -> Option<Scene> {
         Some(Scene {
-            fonts: Fonts::new(font_family, font_size)?,
+            fonts: Fonts::new(font_family, font_fallback, font_size)?,
             ascii: [[None; 128]; 4],
             glyphs: HashMap::new(),
             patterns: [None; 3],

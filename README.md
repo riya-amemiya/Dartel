@@ -160,13 +160,14 @@ dartel config load [FILE]
 
 `FILE` defaults to `$XDG_CONFIG_HOME/dartel/dartel.toml`, or `~/.config/dartel/dartel.toml` when the variable is unset. The kept result lives in `$XDG_STATE_HOME/dartel/settings.bin`, or `~/.local/state/dartel/settings.bin`. Both platforms use these paths.
 
-In the window, Command+S and Command+L on macOS, or Ctrl+Shift+S and Ctrl+Shift+L on Linux, open a prompt with the default path. Enter confirms and Escape cancels. A load in the window applies the font, the padding, the colors, and the shortcuts at once. The scrollback limit applies to tabs opened after the load, and the window size applies at the next start.
+In the window, Command+S and Command+L on macOS, or Ctrl+Shift+S and Ctrl+Shift+L on Linux, open a prompt with the default path. Enter confirms and Escape cancels. A load in the window applies the font, the fallback fonts, the padding, the colors, and the shortcuts at once. The scrollback limit applies to tabs opened after the load, and the window size applies at the next start.
 
 A file may leave out any key, and a missing key keeps its default. An unknown key, a wrong type, or a value outside its range stops the load with the line number, and the kept result stays as it was.
 
 ```toml
 [font]
 family = "Menlo"
+fallback = []
 size = 13.0
 
 [window]
@@ -232,6 +233,7 @@ page-down = "shift+pagedown"
 | Key | Range | Default |
 | --- | --- | --- |
 | `font.family` | A font family name | `Menlo` on macOS, `DejaVu Sans Mono` on Linux |
+| `font.fallback` | An array of at most 16 font family names, each 1 to 255 bytes of UTF-8 | `[]` |
 | `font.size` | 4 to 96 | 13 |
 | `window.columns` | 2 to 1000 | 80 |
 | `window.lines` | 1 to 1000 | 24 |
@@ -241,6 +243,8 @@ page-down = "shift+pagedown"
 | `keys.*` | A shortcut as described in [Shortcuts](#shortcuts), or `""` for none | The values above on macOS, with `ctrl+shift` in place of `cmd` on Linux |
 
 When the font family is not installed, Dartel uses the first available of Menlo and Monaco on macOS or DejaVu Sans Mono and Liberation Mono on Linux.
+
+A character that the font family does not have is drawn from the first font in `font.fallback` that has it, in the order of the array, such as `fallback = ["IPAGothic", "Noto Sans CJK JP"]`. A name that is not installed is skipped. When none of them has the character, Dartel looks in Hiragino Sans, Apple Color Emoji, and Apple Symbols on macOS, or in Noto Sans Mono CJK JP, Noto Sans CJK JP, IPAGothic, Noto Color Emoji, and DejaVu Sans Mono on Linux, then in the installed monospaced fonts, and then in every installed font.
 
 ## Defaults outside the settings file
 
