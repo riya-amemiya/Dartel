@@ -233,8 +233,9 @@ Build and test for that target run on the macOS CI job.
   add a field without measuring throughput.
 - `Row::used` is an upper bound on the leading cells that differ from the
   default cell, and `Row::wide` is set once a wide character was written.
-  Every method of `Row` that writes cells keeps both, because clearing a row
-  and the check for a split wide character rely on them.
+  Every method of `Row` that writes cells keeps both, because clearing a row,
+  the check for a split wide character, and `Scene::compose_row` rely on
+  them. `Scene::compose_row` reads no cell past `Row::used`.
 - `Row` is 40 bytes. Combining marks and image tiles live in `Extras` behind
   `Row::extras`, which is `None` unless the row holds one of them. A method
   that can empty both calls `Row::prune`, because `Row::release` takes the

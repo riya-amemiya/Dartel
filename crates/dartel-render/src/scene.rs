@@ -3,8 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use dartel_term::{
-    Attrs, Color, CursorShape, Modes, Palette, Picture, Rgb, Selection, Span, Style, StyleId, Term,
-    Tile,
+    Attrs, Color, CursorShape, Modes, Palette, Picture, Rgb, Selection, Span, Style, Term, Tile,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -997,13 +996,39 @@ impl Scene {
                 ),
             )
         }));
-        let mut current = (
-            StyleId::DEFAULT,
-            look(term.style(StyleId::DEFAULT), term.palette(), reverse),
-        );
+        let padding = self.padding;
+        let strip = |start: usize, end: usize, color: Rgb| {
+            solid(
+                padding + start as i32 * width,
+                top,
+                (end - start) as i32 * width,
+                height,
+                color,
+                u8::MAX,
+            )
+        };
+        let cells = &source.cells()[..source.used().min(term.cols())];
+        let last = cells
+            .last()
+            .copied()
+            .filter(|_| cells.len() == term.cols())
+            .unwrap_or_default();
+        let tail = look(term.style(last.style()), term.palette(), reverse);
+        let body = if last.is_blank()
+            && !tail.attrs.contains(Attrs::ANY_UNDERLINE)
+            && !tail.attrs.contains(Attrs::STRIKETHROUGH)
+        {
+            cells
+                .iter()
+                .rposition(|cell| *cell != last)
+                .map_or(0, |index| index + 1)
+        } else {
+            cells.len()
+        };
+        let mut current = (last.style(), tail);
         let mut fill: Option<(usize, Rgb)> = None;
         let mut complete = true;
-        'cells: for (column, cell) in source.cells().iter().take(term.cols()).enumerate() {
+        'cells: for (column, cell) in cells[..body].iter().enumerate() {
             if cell.style() != current.0 {
                 current = (
                     cell.style(),
@@ -1011,17 +1036,10 @@ impl Scene {
                 );
             }
             let look = current.1;
-            let left = self.padding + column as i32 * width;
+            let left = padding + column as i32 * width;
             if fill.map(|(_, color)| color) != look.background {
                 if let Some((start, color)) = fill {
-                    row.backgrounds.push(solid(
-                        self.padding + start as i32 * width,
-                        top,
-                        (column - start) as i32 * width,
-                        height,
-                        color,
-                        u8::MAX,
-                    ));
+                    row.backgrounds.push(strip(start, column, color));
                 }
                 fill = look.background.map(|color| (column, color));
             }
@@ -1095,15 +1113,14 @@ impl Scene {
                 ));
             }
         }
+        if body < term.cols() && fill.map(|(_, color)| color) != tail.background {
+            if let Some((start, color)) = fill {
+                row.backgrounds.push(strip(start, body, color));
+            }
+            fill = tail.background.map(|color| (body, color));
+        }
         if let Some((start, color)) = fill {
-            row.backgrounds.push(solid(
-                self.padding + start as i32 * width,
-                top,
-                (term.cols() - start) as i32 * width,
-                height,
-                color,
-                u8::MAX,
-            ));
+            row.backgrounds.push(strip(start, term.cols(), color));
         }
         if source.is_failed() {
             row.backgrounds.push(solid(

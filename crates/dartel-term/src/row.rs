@@ -222,6 +222,12 @@ impl Row {
             .map(|&(_, c)| c)
     }
 
+    #[inline]
+    #[must_use]
+    pub fn used(&self) -> usize {
+        usize::from(self.used)
+    }
+
     #[must_use]
     pub fn occupied(&self) -> usize {
         self.cells[..usize::from(self.used)]

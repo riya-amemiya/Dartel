@@ -536,6 +536,11 @@ flowchart TD
 
 - `Scene` caches the background quads and glyph quads of each line. A frame
   rebuilds only the lines that `Damage` reports.
+- `Scene::compose_row` reads a row up to `Row::used`, because the cells after
+  it are default cells. Inside that range it stops before the run of equal
+  blank cells that ends the row and covers the run with one background quad.
+  A run whose style draws an underline or a strikethrough is read cell by
+  cell, because each of its cells gets a quad.
 - Overlays are appended after the cached quads on every frame. They are search
   matches, the selection, the scroll position bar, the cursor, the banner on
   the last line, the IME preedit text, and the tab bar. The banner shows the

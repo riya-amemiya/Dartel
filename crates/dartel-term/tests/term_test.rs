@@ -1456,3 +1456,27 @@ fn wide_characters_after_narrow_text_keep_their_columns() {
 fn row_takes_forty_bytes() {
     assert_eq!(std::mem::size_of::<Row>(), 40);
 }
+
+#[test]
+fn used_covers_the_written_cells_of_a_row() {
+    let term = fed(2, 10, "abc");
+    assert_eq!(term.grid().row(0).used(), 3);
+    assert_eq!(term.grid().row(1).used(), 0);
+}
+
+#[test]
+fn used_covers_a_row_erased_with_a_background_color() {
+    assert_eq!(fed(2, 10, "\x1b[44m\x1b[K").grid().row(0).used(), 10);
+}
+
+#[test]
+fn cells_after_used_are_default_cells() {
+    let term = fed(2, 10, "\x1b[44mab\x1b[0m\x1b[5C\x1b[41mc\x1b[1K");
+    let row = term.grid().row(0);
+    assert!(row.used() < 10);
+    assert!(
+        row.cells()[row.used()..]
+            .iter()
+            .all(|cell| *cell == Cell::default())
+    );
+}
