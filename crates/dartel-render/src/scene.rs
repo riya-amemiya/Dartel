@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use dartel_term::{
@@ -15,6 +16,42 @@ const MATCH_ALPHA: u8 = 90;
 const CURRENT_ALPHA: u8 = 170;
 const SCROLL_ALPHA: u8 = 128;
 const TAB_CELLS: u32 = 24;
+const DOUBLE: u8 = 3;
+const QUADRANTS: [u8; 10] = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14];
+const ARMS: &str = concat!(
+    "0101020210102020",
+    "0101020210102020",
+    "0101020210102020",
+    "0110021001200220",
+    "0011001200210022",
+    "1100120021002200",
+    "1001100220012002",
+    "1110121021101120",
+    "2120221012202220",
+    "1011101220111021",
+    "2021201210222022",
+    "0111011202110212",
+    "0121012202210222",
+    "1101110212011202",
+    "2101210222012202",
+    "1111111212111212",
+    "2111112121212112",
+    "2211112212212212",
+    "1222212222212222",
+    "0101020210102020",
+    "0303303003100130",
+    "0330001300310033",
+    "1300310033001003",
+    "3001300313103130",
+    "3330101330313033",
+    "0313013103331303",
+    "3101330313133131",
+    "3333011000111001",
+    "1100000000000000",
+    "0001100001000010",
+    "0002200002000020",
+    "0201102001022010",
+);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Glyph {
@@ -60,6 +97,46 @@ pub struct Overlay<'a> {
     pub tabs: &'a [String],
     pub active: usize,
     pub width: u32,
+}
+
+struct Canvas {
+    size: [u32; 2],
+    pixels: Vec<u8>,
+}
+
+impl Canvas {
+    fn new(size: [u32; 2]) -> Canvas {
+        Canvas {
+            size,
+            pixels: vec![0; (size[0] * size[1]) as usize],
+        }
+    }
+
+    fn set(&mut self, columns: Range<u32>, rows: Range<u32>, alpha: u8) {
+        for y in rows {
+            let row = (y * self.size[0]) as usize;
+            self.pixels[row + columns.start as usize..row + columns.end as usize].fill(alpha);
+        }
+    }
+
+    fn set_along(&mut self, axis: usize, along: Range<u32>, across: Range<u32>, alpha: u8) {
+        if axis == 0 {
+            self.set(along, across, alpha);
+        } else {
+            self.set(across, along, alpha);
+        }
+    }
+
+    fn paint(&mut self, coverage: impl Fn(f32, f32) -> f32) {
+        let width = self.size[0];
+        for (index, pixel) in self.pixels.iter_mut().enumerate() {
+            let (x, y) = (index as u32 % width, index as u32 / width);
+            let alpha = (coverage(x as f32 + 0.5, y as f32 + 0.5).clamp(0.0, 1.0)
+                * f32::from(u8::MAX))
+            .round() as u8;
+            *pixel = (*pixel).max(alpha);
+        }
+    }
 }
 
 struct Label<'a> {
@@ -270,6 +347,223 @@ fn thumb(track: i32, cell: i32, lines: usize, history: usize, first: usize) -> (
     )
 }
 
+fn rgba(alpha: Vec<u8>) -> Vec<u8> {
+    alpha.into_iter().flat_map(|alpha| [alpha; 4]).collect()
+}
+
+fn strokes(size: [u32; 2], stroke: u32) -> [u32; 3] {
+    let room = size[0].min(size[1]).max(1);
+    let light = stroke.clamp(1, room);
+    let heavy = (2 * light).max(size[0] / 5).min(room);
+    let gap = light.max(size[0] / 8).min(room.saturating_sub(2 * light));
+    [light, heavy, gap]
+}
+
+fn lines(weight: u8, span: u32, [light, heavy, gap]: [u32; 3]) -> Vec<Range<u32>> {
+    let line = |start: u32, width: u32| start.min(span)..(start + width).min(span);
+    match weight {
+        0 => Vec::new(),
+        DOUBLE => {
+            let start = span.saturating_sub(2 * light + gap) / 2;
+            vec![line(start, light), line(start + light + gap, light)]
+        }
+        _ => {
+            let width = if weight == 1 { light } else { heavy };
+            vec![line(span.saturating_sub(width) / 2, width)]
+        }
+    }
+}
+
+fn arms(code: u32) -> Option<[u8; 4]> {
+    let index = code.checked_sub(0x2500)? as usize;
+    let digits = ARMS.as_bytes().get(4 * index..4 * index + 4)?;
+    Some(std::array::from_fn(|arm| digits[arm] - b'0'))
+}
+
+fn reach(perpendicular: &[Range<u32>], positive: bool, near: bool) -> u32 {
+    let line = if near == positive {
+        perpendicular.last()
+    } else {
+        perpendicular.first()
+    };
+    line.map_or(0, |line| if positive { line.start } else { line.end })
+}
+
+fn draw_arms(canvas: &mut Canvas, axis: usize, own: [u8; 2], sides: [u8; 2], strokes: [u32; 3]) {
+    let side = sides[0].max(sides[1]);
+    let perpendicular = lines(
+        if side == 0 { own[0].max(own[1]) } else { side },
+        canvas.size[axis],
+        strokes,
+    );
+    for (direction, weight) in own.into_iter().enumerate() {
+        let positive = direction == 1;
+        let stops = own[1 - direction] == 0 && sides.iter().all(|&arm| arm != 0);
+        for (index, across) in lines(weight, canvas.size[1 - axis], strokes)
+            .into_iter()
+            .enumerate()
+        {
+            let near = side == DOUBLE
+                && if weight == DOUBLE {
+                    sides[index] != 0
+                } else {
+                    stops
+                };
+            let edge = reach(&perpendicular, positive, near);
+            let along = if positive {
+                edge..canvas.size[axis]
+            } else {
+                0..edge
+            };
+            canvas.set_along(axis, along, across, u8::MAX);
+        }
+    }
+}
+
+fn dashes(code: u32) -> Option<(usize, u32)> {
+    match code {
+        0x2504..=0x250B => Some((
+            ((code - 0x2504) / 2 % 2) as usize,
+            if code < 0x2508 { 3 } else { 4 },
+        )),
+        0x254C..=0x254F => Some((((code - 0x254C) / 2) as usize, 2)),
+        _ => None,
+    }
+}
+
+fn draw_dashes(canvas: &mut Canvas, axis: usize, count: u32) {
+    let (length, breadth) = (canvas.size[axis], canvas.size[1 - axis]);
+    for segment in 0..count {
+        let (start, end) = (segment * length / count, (segment + 1) * length / count);
+        let gap = (end - start) / 3;
+        canvas.set_along(axis, start..start + gap / 2, 0..breadth, 0);
+        canvas.set_along(axis, end - (gap - gap / 2)..end, 0..breadth, 0);
+    }
+}
+
+fn draw_arc(canvas: &mut Canvas, arms: [u8; 4], strokes: [u32; 3]) {
+    let [width, height] = canvas.size;
+    let column = lines(1, width, strokes).remove(0);
+    let row = lines(1, height, strokes).remove(0);
+    let half = strokes[0] as f32 / 2.0;
+    let center = [column.start as f32 + half, row.start as f32 + half];
+    let sign = [arms[1], arms[2]].map(|arm| if arm == 0 { -1.0 } else { 1.0 });
+    let room = |axis: usize, span: u32| {
+        if sign[axis] > 0.0 {
+            span as f32 - center[axis]
+        } else {
+            center[axis]
+        }
+    };
+    let radius = (room(0, width).min(room(1, height)) - 1.0).max(0.0);
+    let corner = [center[0] + sign[0] * radius, center[1] + sign[1] * radius];
+    let inside = |value: f32, range: &Range<u32>| {
+        if (range.start as f32..range.end as f32).contains(&value) {
+            1.0
+        } else {
+            0.0
+        }
+    };
+    canvas.paint(|x, y| {
+        let (dx, dy) = ((x - corner[0]) * sign[0], (y - corner[1]) * sign[1]);
+        if dy > 0.0 {
+            inside(x, &column)
+        } else if dx > 0.0 {
+            inside(y, &row)
+        } else {
+            half + 0.5 - (dx.hypot(dy) - radius).abs()
+        }
+    });
+}
+
+fn draw_diagonals(canvas: &mut Canvas, code: u32, light: u32) {
+    let [width, height] = canvas.size.map(|side| side as f32);
+    let length = width.hypot(height);
+    let half = light as f32 / 2.0 + 0.5;
+    canvas.paint(|x, y| {
+        let rising = (height * x + width * y - width * height).abs() / length;
+        let falling = (height * x - width * y).abs() / length;
+        half - match code {
+            0x2571 => rising,
+            0x2572 => falling,
+            _ => rising.min(falling),
+        }
+    });
+}
+
+fn draw_eighths(canvas: &mut Canvas, [left, right, top, bottom]: [u32; 4], alpha: u8) {
+    let edges = |from: u32, to: u32, span: u32| {
+        let start = from * span / 8;
+        start..(to * span / 8).max(start + 1).min(span)
+    };
+    let (columns, rows) = (
+        edges(left, right, canvas.size[0]),
+        edges(top, bottom, canvas.size[1]),
+    );
+    canvas.set(columns, rows, alpha);
+}
+
+fn draw_block(canvas: &mut Canvas, code: u32) {
+    match code {
+        0x2580 => draw_eighths(canvas, [0, 8, 0, 4], u8::MAX),
+        0x2581..=0x2588 => draw_eighths(canvas, [0, 8, 0x2588 - code, 8], u8::MAX),
+        0x2589..=0x258F => draw_eighths(canvas, [0, 0x2590 - code, 0, 8], u8::MAX),
+        0x2590 => draw_eighths(canvas, [4, 8, 0, 8], u8::MAX),
+        0x2591..=0x2593 => {
+            draw_eighths(canvas, [0, 8, 0, 8], ((code - 0x2590) * 255 / 4) as u8);
+        }
+        0x2594 => draw_eighths(canvas, [0, 8, 0, 1], u8::MAX),
+        0x2595 => draw_eighths(canvas, [7, 8, 0, 8], u8::MAX),
+        _ => {
+            let quadrants = QUADRANTS[(code - 0x2596) as usize];
+            for quadrant in (0..4).filter(|quadrant| quadrants >> quadrant & 1 != 0) {
+                let (x, y) = (4 * (quadrant % 2), 4 * (quadrant / 2));
+                draw_eighths(canvas, [x, x + 4, y, y + 4], u8::MAX);
+            }
+        }
+    }
+}
+
+fn draw_powerline(canvas: &mut Canvas, code: u32, light: u32) {
+    let [width, height] = canvas.size.map(|side| side as f32);
+    let length = width.hypot(height / 2.0);
+    let half = light as f32 / 2.0 + 0.5;
+    canvas.paint(|x, y| {
+        let x = if code >= 0xE0B2 { width - x } else { x };
+        let upper = (width * y - height / 2.0 * x) / length;
+        let lower = (width * (height - y) - height / 2.0 * x) / length;
+        if code.is_multiple_of(2) {
+            upper.min(lower) + 0.5
+        } else {
+            half - upper.abs().min(lower.abs())
+        }
+    });
+}
+
+fn drawing(c: char, size: [u32; 2], stroke: u32) -> Option<Vec<u8>> {
+    let code = u32::from(c);
+    if !matches!(code, 0x2500..=0x259F | 0xE0B0..=0xE0B3) {
+        return None;
+    }
+    let strokes = strokes(size, stroke);
+    let mut canvas = Canvas::new(size);
+    match code {
+        0x2571..=0x2573 => draw_diagonals(&mut canvas, code, strokes[0]),
+        0x256D..=0x2570 => draw_arc(&mut canvas, arms(code)?, strokes),
+        0x2500..=0x257F => {
+            let [up, right, down, left] = arms(code)?;
+            draw_arms(&mut canvas, 0, [left, right], [up, down], strokes);
+            draw_arms(&mut canvas, 1, [up, down], [left, right], strokes);
+            if let Some((axis, count)) = dashes(code) {
+                draw_dashes(&mut canvas, axis, count);
+            }
+        }
+        0x2580..=0x259F => draw_block(&mut canvas, code),
+        _ => draw_powerline(&mut canvas, code, strokes[0]),
+    }
+    Some(canvas.pixels)
+}
+
 fn centering(span: i32, glyph: Glyph) -> i32 {
     if (span - i32::from(glyph.advance)).abs() <= 1 {
         0
@@ -396,6 +690,20 @@ impl Scene {
     }
 
     fn rasterize(&mut self, gpu: &Gpu, c: char, face: usize) -> Option<Glyph> {
+        let metrics = self.fonts.metrics();
+        let size = [metrics.width, metrics.height];
+        if let Some(alpha) = drawing(c, size, metrics.stroke) {
+            if !size.iter().all(|side| (1..=ATLAS_SIZE).contains(side)) {
+                return Some(Glyph::default());
+            }
+            return Some(Glyph {
+                origin: self.place(gpu, size, &rgba(alpha))?,
+                size: [size[0] as u16, size[1] as u16],
+                top: metrics.ascent as i16,
+                advance: size[0] as i16,
+                ..Glyph::default()
+            });
+        }
         let Some(raster) = self.fonts.rasterize(c, face).filter(|raster| {
             (1..=ATLAS_SIZE).contains(&raster.width) && (1..=ATLAS_SIZE).contains(&raster.height)
         }) else {
@@ -434,12 +742,8 @@ impl Scene {
         let (top, height, thickness) = band(pattern, metrics);
         let size = [metrics.width, height];
         let glyph = if size.iter().all(|side| (1..=ATLAS_SIZE).contains(side)) {
-            let pixels: Vec<u8> = mask(pattern, size, thickness)
-                .into_iter()
-                .flat_map(|alpha| [alpha; 4])
-                .collect();
             Glyph {
-                origin: self.place(gpu, size, &pixels)?,
+                origin: self.place(gpu, size, &rgba(mask(pattern, size, thickness)))?,
                 size: [size[0] as u16, size[1] as u16],
                 top: top as i16,
                 ..Glyph::default()
@@ -968,7 +1272,7 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
-    use super::{Metrics, Pattern, band, mask, thumb};
+    use super::{ARMS, Metrics, Pattern, band, drawing, mask, strokes, thumb};
 
     fn metrics(width: u32, height: u32, underline: i32, stroke: u32) -> Metrics {
         Metrics {
@@ -1048,5 +1352,300 @@ mod tests {
     #[test]
     fn thumb_fills_the_track_without_history() {
         assert_eq!(thumb(240, 10, 24, 0, 0), (0, 240));
+    }
+
+    fn draw(c: char, size: [u32; 2]) -> Vec<u8> {
+        drawing(c, size, 1).unwrap()
+    }
+
+    fn row(pixels: &[u8], width: usize, y: usize) -> Vec<u8> {
+        pixels[y * width..(y + 1) * width].to_vec()
+    }
+
+    fn edges(pixels: &[u8], [width, height]: [u32; 2]) -> [Vec<u8>; 4] {
+        let (width, height) = (width as usize, height as usize);
+        [
+            row(pixels, width, 0),
+            column(pixels, width, width - 1),
+            row(pixels, width, height - 1),
+            column(pixels, width, 0),
+        ]
+    }
+
+    #[test]
+    fn arm_table_holds_four_weights_for_every_box_drawing_character() {
+        assert!(ARMS.len() == 512 && ARMS.bytes().all(|digit| (b'0'..=b'3').contains(&digit)));
+    }
+
+    #[test]
+    fn heavy_stroke_and_double_gap_grow_with_the_cell_width() {
+        assert_eq!(strokes([30, 60], 1), [1, 6, 3]);
+    }
+
+    #[test]
+    fn heavy_stroke_is_twice_the_light_stroke_in_a_small_cell() {
+        assert_eq!(strokes([10, 20], 1), [1, 2, 1]);
+    }
+
+    #[test]
+    fn drawn_mask_covers_one_cell() {
+        assert_eq!(draw('\u{253C}', [10, 20]).len(), 200);
+    }
+
+    #[test]
+    fn characters_outside_the_drawn_ranges_are_left_to_the_font() {
+        assert!(drawing('A', [10, 20], 1).is_none() && drawing('\u{25A0}', [10, 20], 1).is_none());
+    }
+
+    #[test]
+    fn light_horizontal_line_runs_across_the_vertical_center() {
+        let pixels = draw('\u{2500}', [10, 20]);
+        assert!(row(&pixels, 10, 9).iter().all(|&alpha| alpha == 255));
+    }
+
+    #[test]
+    fn light_horizontal_line_is_one_stroke_tall() {
+        let pixels = draw('\u{2500}', [10, 20]);
+        assert_eq!(pixels.iter().filter(|&&alpha| alpha > 0).count(), 10);
+    }
+
+    #[test]
+    fn light_vertical_line_runs_down_the_horizontal_center() {
+        let pixels = draw('\u{2502}', [10, 20]);
+        assert!(column(&pixels, 10, 4).iter().all(|&alpha| alpha == 255));
+    }
+
+    #[test]
+    fn heavy_line_is_thicker_than_the_light_line() {
+        let count = |c| {
+            column(&draw(c, [10, 20]), 10, 0)
+                .iter()
+                .filter(|&&alpha| alpha > 0)
+                .count()
+        };
+        assert!(count('\u{2501}') > count('\u{2500}'));
+    }
+
+    #[test]
+    fn every_arm_meets_the_cell_edge_where_the_straight_line_of_its_weight_does() {
+        let straight = [
+            ['\u{2500}', '\u{2501}', '\u{2550}'],
+            ['\u{2502}', '\u{2503}', '\u{2551}'],
+        ];
+        for (size, stroke) in [([10, 20], 1), ([7, 15], 1), ([24, 48], 3), ([5, 9], 1)] {
+            for code in (0x2500..=0x257F)
+                .filter(|code| !matches!(code, 0x2504..=0x250B | 0x254C..=0x254F | 0x2571..=0x2573))
+            {
+                let c = char::from_u32(code).unwrap();
+                let found = edges(&drawing(c, size, stroke).unwrap(), size);
+                let digits = &ARMS.as_bytes()[4 * (code as usize - 0x2500)..];
+                for (edge, digit) in digits.iter().take(4).enumerate() {
+                    let weight = usize::from(digit - b'0');
+                    let expected = if weight == 0 {
+                        vec![0; found[edge].len()]
+                    } else {
+                        let line = straight[1 - edge % 2][weight - 1];
+                        edges(&drawing(line, size, stroke).unwrap(), size)[edge].clone()
+                    };
+                    assert_eq!(found[edge], expected, "{c} {size:?} edge {edge}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn double_cross_leaves_the_middle_of_the_cell_empty() {
+        assert_eq!(draw('\u{256C}', [10, 20])[9 * 10 + 4], 0);
+    }
+
+    #[test]
+    fn double_corner_joins_the_outer_lines() {
+        let pixels = draw('\u{2554}', [10, 20]);
+        assert!(pixels[8 * 10 + 3] == 255 && pixels[10 * 10 + 5] == 255);
+    }
+
+    #[test]
+    fn double_corner_leaves_the_gap_between_its_lines_open() {
+        assert_eq!(draw('\u{2554}', [10, 20])[9 * 10 + 4], 0);
+    }
+
+    #[test]
+    fn double_tee_keeps_its_through_line_unbroken() {
+        let pixels = draw('\u{2566}', [10, 20]);
+        assert!(row(&pixels, 10, 8).iter().all(|&alpha| alpha == 255));
+    }
+
+    #[test]
+    fn single_stem_under_a_double_line_starts_at_the_lower_line() {
+        let pixels = draw('\u{2564}', [10, 20]);
+        assert!(pixels[9 * 10 + 4] == 0 && pixels[10 * 10 + 4] == 255);
+    }
+
+    #[test]
+    fn quadruple_dash_leaves_one_gap_in_each_quarter() {
+        let pixels = draw('\u{2508}', [16, 24]);
+        assert_eq!(
+            row(&pixels, 16, 11),
+            [
+                255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 0
+            ]
+        );
+    }
+
+    #[test]
+    fn double_dash_breaks_a_vertical_line_along_its_rows() {
+        let pixels = draw('\u{254E}', [10, 20]);
+        let open = [0, 8, 9, 10, 18, 19];
+        let expected: Vec<u8> = (0..20)
+            .map(|y| if open.contains(&y) { 0 } else { 255 })
+            .collect();
+        assert_eq!(column(&pixels, 10, 4), expected);
+    }
+
+    #[test]
+    fn rounded_corner_has_partial_coverage_on_its_curve() {
+        assert!(
+            draw('\u{256D}', [10, 20])
+                .iter()
+                .any(|&alpha| alpha > 0 && alpha < 255)
+        );
+    }
+
+    #[test]
+    fn rising_diagonal_touches_the_bottom_left_and_top_right_corners() {
+        let pixels = draw('\u{2571}', [10, 20]);
+        assert!(pixels[19 * 10] > 0 && pixels[9] > 0 && pixels[0] == 0);
+    }
+
+    #[test]
+    fn diagonal_cross_is_symmetric_left_to_right() {
+        let pixels = draw('\u{2573}', [10, 20]);
+        let mirrored: Vec<u8> = pixels
+            .chunks(10)
+            .flat_map(|line| line.iter().rev().copied())
+            .collect();
+        assert_eq!(pixels, mirrored);
+    }
+
+    #[test]
+    fn lower_half_block_fills_exactly_the_bottom_half() {
+        let pixels = draw('\u{2584}', [10, 21]);
+        assert!(pixels[..100].iter().all(|&alpha| alpha == 0));
+        assert!(pixels[100..].iter().all(|&alpha| alpha == 255));
+    }
+
+    #[test]
+    fn upper_and_lower_half_blocks_cover_the_cell_once() {
+        let (upper, lower) = (draw('\u{2580}', [9, 21]), draw('\u{2584}', [9, 21]));
+        assert!(
+            upper
+                .iter()
+                .zip(&lower)
+                .all(|(&a, &b)| u16::from(a) + u16::from(b) == 255)
+        );
+    }
+
+    #[test]
+    fn left_and_right_half_blocks_cover_the_cell_once() {
+        let (left, right) = (draw('\u{258C}', [9, 21]), draw('\u{2590}', [9, 21]));
+        assert!(
+            left.iter()
+                .zip(&right)
+                .all(|(&a, &b)| u16::from(a) + u16::from(b) == 255)
+        );
+    }
+
+    #[test]
+    fn lower_eighths_grow_one_eighth_at_a_time() {
+        let filled = |c| draw(c, [8, 16]).iter().filter(|&&alpha| alpha > 0).count();
+        assert_eq!(
+            ['\u{2581}', '\u{2582}', '\u{2587}', '\u{2588}'].map(filled),
+            [16, 32, 112, 128]
+        );
+    }
+
+    #[test]
+    fn left_eighths_shrink_one_eighth_at_a_time() {
+        let filled = |c| draw(c, [8, 16]).iter().filter(|&&alpha| alpha > 0).count();
+        assert_eq!(
+            ['\u{2589}', '\u{258A}', '\u{258F}'].map(filled),
+            [112, 96, 16]
+        );
+    }
+
+    #[test]
+    fn thin_eighth_block_keeps_one_pixel_in_a_small_cell() {
+        let pixels = draw('\u{2594}', [5, 6]);
+        assert!(pixels[..5].iter().all(|&alpha| alpha == 255));
+        assert!(pixels[5..].iter().all(|&alpha| alpha == 0));
+    }
+
+    #[test]
+    fn right_eighth_block_sits_on_the_right_edge() {
+        let pixels = draw('\u{2595}', [8, 16]);
+        assert!(column(&pixels, 8, 7).iter().all(|&alpha| alpha == 255));
+        assert_eq!(pixels.iter().filter(|&&alpha| alpha > 0).count(), 16);
+    }
+
+    #[test]
+    fn quadrant_block_fills_the_upper_left_and_lower_right() {
+        let pixels = draw('\u{259A}', [10, 20]);
+        assert_eq!(
+            [pixels[0], pixels[199], pixels[9], pixels[190]],
+            [255, 255, 0, 0]
+        );
+    }
+
+    #[test]
+    fn three_quadrant_block_leaves_only_the_upper_right_empty() {
+        let pixels = draw('\u{2599}', [10, 20]);
+        assert_eq!(
+            [pixels[0], pixels[199], pixels[9], pixels[190]],
+            [255, 255, 0, 255]
+        );
+    }
+
+    #[test]
+    fn shades_cover_the_cell_at_a_quarter_a_half_and_three_quarters() {
+        assert_eq!(
+            ['\u{2591}', '\u{2592}', '\u{2593}'].map(|c| draw(c, [4, 8])),
+            [vec![63; 32], vec![127; 32], vec![191; 32]]
+        );
+    }
+
+    #[test]
+    fn right_pointing_triangle_covers_the_left_edge() {
+        let pixels = draw('\u{E0B0}', [10, 20]);
+        assert!(column(&pixels, 10, 0).iter().all(|&alpha| alpha > 0));
+    }
+
+    #[test]
+    fn right_pointing_triangle_leaves_the_right_corners_empty() {
+        let pixels = draw('\u{E0B0}', [10, 20]);
+        assert!(pixels[9] == 0 && pixels[199] == 0 && pixels[10 * 10 + 9] > 0);
+    }
+
+    #[test]
+    fn left_pointing_triangle_mirrors_the_right_pointing_one() {
+        let mirrored: Vec<u8> = draw('\u{E0B0}', [10, 20])
+            .chunks(10)
+            .flat_map(|line| line.iter().rev().copied())
+            .collect();
+        assert_eq!(draw('\u{E0B2}', [10, 20]), mirrored);
+    }
+
+    #[test]
+    fn line_arrow_leaves_the_inside_of_the_triangle_empty() {
+        let (solid, line) = (draw('\u{E0B0}', [10, 20]), draw('\u{E0B1}', [10, 20]));
+        assert!(solid[10 * 10 + 2] == 255 && line[10 * 10 + 2] == 0);
+    }
+
+    #[test]
+    fn left_line_arrow_mirrors_the_right_line_arrow() {
+        let mirrored: Vec<u8> = draw('\u{E0B1}', [10, 20])
+            .chunks(10)
+            .flat_map(|line| line.iter().rev().copied())
+            .collect();
+        assert_eq!(draw('\u{E0B3}', [10, 20]), mirrored);
     }
 }

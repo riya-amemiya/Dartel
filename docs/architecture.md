@@ -485,7 +485,10 @@ flowchart TD
     damage["Damaged lines in Term"] --> rebuild["Rebuild the cached quads of those lines"]
     rebuild --> cached{"Glyph in the cache"}
     cached -- yes --> frame["Concatenate backgrounds, glyphs, pictures, and overlays"]
-    cached -- no --> raster["Rasterize with swash and upload to the atlas"]
+    cached -- no --> drawn{"Box drawing, block element, or Powerline arrow"}
+    drawn -- yes --> mask["Draw a mask of one cell and upload to the atlas"]
+    drawn -- no --> raster["Rasterize with swash and upload to the atlas"]
+    mask --> frame
     raster --> frame
     frame --> buffer["Write the instance buffer"]
     buffer --> draw["One instanced draw call per layer"]
@@ -529,6 +532,33 @@ flowchart TD
   position and moves up when it would pass the bottom of the cell. The masks
   are dropped with the glyph cache, so a full atlas or a new font size draws
   them again.
+- Box drawing characters from U+2500 to U+257F, block elements from U+2580
+  to U+259F, and the Powerline arrows from U+E0B0 to U+E0B3 are not taken
+  from the font. When such a character is first rasterized, `Scene` draws a
+  mask the size of one cell into the atlas and caches it as a glyph whose
+  left edge, top, and advance put it on the top left corner of the cell. From
+  then on it goes through the glyph cache and `Scene::compose_row` like any
+  other glyph, so the check costs nothing per cell. The masks come from a pure
+  function of the code point, the cell size, and `Metrics::stroke`.
+- A box drawing character is described by the weight of its four arms, none,
+  light, heavy, or double, read from a table of four digits per character.
+  A light line is `Metrics::stroke` thick, a heavy line is twice that or a
+  fifth of the cell width, and the gap of a double line is the light stroke or
+  an eighth of the cell width. Horizontal lines are centered on the height of
+  the cell and vertical lines on its width, with the same integer rounding for
+  every character, so an arm meets the edge of the cell on the same pixels as
+  the straight line of its weight in the next cell. Each arm runs from the
+  edge into the perpendicular lines, and the lines of a double arm stop at
+  the near or far line of a double crossing depending on which arms exist, so
+  double corners and tees keep their inner gaps. Dashed lines clear a whole
+  number of gaps that split evenly at the cell edges. Rounded corners are a
+  quarter circle that ends one pixel before the edge and continues as a
+  straight line, and diagonals run from corner to corner. Curves and slopes
+  are antialiased by their distance to the line.
+- Block elements fill rectangles in eighths of the cell, with at least one
+  pixel, and the shades are the whole cell at a quarter, a half, and three
+  quarters of full alpha. The Powerline arrows are a filled triangle and its
+  outline one light stroke wide, mirrored for the left-pointing pair.
 - Glyphs for ASCII are cached in an array indexed by face and byte. Other
   glyphs are cached in a `HashMap` keyed by character and face.
 - `font::Fonts` loads four faces of one family and finds a fallback face per

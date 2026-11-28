@@ -16,6 +16,7 @@ Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With 
 - Lines rewrap when the window width changes
 - True color and 256 colors, bold, dim, italic, straight, double, curly, dotted, and dashed underlines, strikethrough, and inverse
 - Wide characters, combining marks, and emoji through font fallback
+- Box drawing characters, block elements, and the Powerline arrows drawn by Dartel to fill the cell, so lines join without gaps between cells and rows
 - Images through Sixel and the kitty graphics protocol
 - The kitty keyboard protocol
 - Shell integration through OSC 133 and OSC 7

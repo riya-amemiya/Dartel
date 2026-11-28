@@ -93,7 +93,7 @@ Dartel/
 │   │       ├── lib.rs        # Exports
 │   │       ├── font.rs       # Font discovery, fallback, rasterization
 │   │       ├── gpu.rs        # wgpu surface, glyph atlas, picture textures, draw calls
-│   │       ├── scene.rs      # Rows to quads, glyph cache, pictures, overlays, tab bar
+│   │       ├── scene.rs      # Rows to quads, glyph cache, drawn box and block glyphs, pictures, overlays, tab bar
 │   │       └── shader.wgsl   # Vertex and fragment shader
 │   └── dartel/               # Binary crate
 │       ├── macos/
@@ -241,6 +241,11 @@ Build and test for that target run on the macOS CI job.
 - The counts in `Scene::layers` add up to the length of `Scene::quads`. The
   texture rectangle of a `Quad` has a size, and a size of zero means a solid
   quad.
+- Box drawing characters, block elements, and Powerline arrows are drawn by
+  `Scene::rasterize` as masks of one cell, and `Scene::compose_row` draws
+  them as ordinary cached glyphs. A horizontal line of one weight sits on the
+  same rows in every character, and a vertical line on the same columns, so a
+  new character draws its arms through `draw_arms` and the `ARMS` table.
 - The TOML file is parsed only by `dartel_config::load`. Start-up reads the
   state file through `Config::decode`. A change to the fields of `Config`
   changes the layout of the state file, so change the last byte of `MAGIC`
@@ -263,7 +268,8 @@ Build and test for that target run on the macOS CI job.
   `Locations::resolve`, because `std::env::set_var` is unsafe.
 - The `dartel-render` and `dartel` crates have no integration tests. Check
   them on a display. `scene.rs` unit-tests the private helpers that build the
-  underline masks.
+  underline masks and the masks of box drawing characters, block elements,
+  and Powerline arrows.
 
 ## Checking the Window on Linux Without a Display
 
