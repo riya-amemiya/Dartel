@@ -221,18 +221,20 @@ impl Row {
         self.tags |= tags;
     }
 
+    #[inline]
+    #[must_use]
+    pub fn mark_entries(&self) -> &[(u16, char)] {
+        self.extras
+            .as_deref()
+            .map_or(&[], |extras| extras.marks.as_slice())
+    }
+
     pub fn marks(&self, column: usize) -> impl Iterator<Item = char> + '_ {
         self.extras
             .iter()
             .flat_map(|extras| &extras.marks)
             .filter(move |&&(mark, _)| usize::from(mark) == column)
             .map(|&(_, c)| c)
-    }
-
-    pub(super) fn mark_list(&self) -> &[(u16, char)] {
-        self.extras
-            .as_deref()
-            .map_or(&[], |extras| extras.marks.as_slice())
     }
 
     #[inline]

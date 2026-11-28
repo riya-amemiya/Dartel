@@ -107,6 +107,7 @@ pub struct Fonts {
     context: ScaleContext,
     shaper: ShapeContext,
     shapes: [HashMap<String, Box<[Ligature]>>; 4],
+    sequences: [HashMap<String, Option<(usize, u16)>>; 4],
     ligatures: bool,
     size: f32,
     metrics: Metrics,
@@ -188,6 +189,7 @@ impl Fonts {
             context: ScaleContext::new(),
             shaper: ShapeContext::new(),
             shapes: Default::default(),
+            sequences: Default::default(),
             ligatures: false,
             size,
             metrics: Metrics {
@@ -352,13 +354,52 @@ impl Fonts {
         found.into()
     }
 
+    pub fn unite(&mut self, text: &str, style: usize) -> Option<(usize, u16)> {
+        if let Some(&united) = self.sequences[style].get(text) {
+            return united;
+        }
+        let united = self.merge(text, style);
+        if self.sequences[style].len() >= SHAPES {
+            self.sequences[style].clear();
+        }
+        self.sequences[style].insert(text.to_owned(), united);
+        united
+    }
+
+    fn drawing(&self, c: char, style: usize) -> Option<usize> {
+        [self.styles[style], self.styles[REGULAR]]
+            .into_iter()
+            .find(|&index| self.faces[index].font().charmap().map(c) != 0)
+            .or_else(|| self.fallbacks.get(&c).copied().flatten())
+    }
+
+    fn merge(&mut self, text: &str, style: usize) -> Option<(usize, u16)> {
+        let index = self.drawing(text.chars().next()?, style)?;
+        let mut shaper = self
+            .shaper
+            .builder(self.faces[index].font())
+            .script(Script::Latin)
+            .build();
+        shaper.add_str(text);
+        let mut glyphs = Vec::new();
+        shaper.shape_with(|cluster| glyphs.extend(cluster.glyphs.iter().map(|glyph| glyph.id)));
+        match glyphs[..] {
+            [glyph] if glyph != 0 => Some((index, glyph)),
+            _ => None,
+        }
+    }
+
+    pub fn face(&self, style: usize) -> usize {
+        self.styles[style]
+    }
+
     pub fn rasterize(&mut self, c: char, style: usize) -> Option<Raster> {
         let (index, glyph) = self.resolve(c, style)?;
         self.render(index, glyph)
     }
 
-    pub fn rasterize_glyph(&mut self, glyph: u16, style: usize) -> Option<Raster> {
-        self.render(self.styles[style], glyph)
+    pub fn rasterize_glyph(&mut self, glyph: u16, face: usize) -> Option<Raster> {
+        self.render(face, glyph)
     }
 
     fn render(&mut self, index: usize, glyph: u16) -> Option<Raster> {

@@ -16,6 +16,7 @@ Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With 
 - Lines rewrap when the window width changes
 - True color and 256 colors, bold, dim, italic, straight, double, curly, dotted, and dashed underlines, strikethrough, and inverse
 - Wide characters, combining marks, and emoji through font fallback
+- Emoji sequences such as families, skin tones, and flags drawn as one emoji when the font joins them, each covering the cells of its characters
 - Programming ligatures such as `->` and `!=` when the font has them, each covering the cells of its characters
 - Box drawing characters, block elements, and the Powerline arrows drawn by Dartel to fill the cell, so lines join without gaps between cells and rows
 - Images through Sixel and the kitty graphics protocol
@@ -270,6 +271,8 @@ page-down = "shift+pagedown"
 When the font family is not installed, Dartel uses the first available of Menlo and Monaco on macOS or DejaVu Sans Mono and Liberation Mono on Linux.
 
 When the regular face of the font family has the `calt`, `liga`, or `clig` feature for the default or Latin script, Dartel shapes text with it and draws the ligatures that the font produces. A ligature takes the cells of the characters it replaces, so the columns of the text around it stay where they are. Only characters of one style in one row join, and a wide character, a character with a combining mark, a box drawing character, a block element, or a Powerline arrow ends the sequence. Selection, search, copy, and the cursor keep working on the cells. There is no setting for this.
+
+Dartel draws an emoji sequence as one emoji when the font that draws its first character shapes the whole sequence into one glyph. A sequence is characters joined by the zero width joiner U+200D, an emoji followed by a skin tone modifier from U+1F3FB to U+1F3FF, or two regional indicators that form a flag, paired from the left. The emoji is drawn from the first cell of the sequence, and the other cells of the sequence stay empty. The cells do not change, so the cursor, selection, search, copy, and the columns of the text after the sequence stay where they are. A sequence that the font does not join, and a joined glyph wider than the cells of the sequence, are drawn one character at a time. A character with only U+FE0F after it is not joined. There is no setting for this.
 
 A character that the font family does not have is drawn from the first font in `font.fallback` that has it, in the order of the array, such as `fallback = ["IPAGothic", "Noto Sans CJK JP"]`. A name that is not installed is skipped. When none of them has the character, Dartel looks in Hiragino Sans, Apple Color Emoji, and Apple Symbols on macOS, or in Noto Sans Mono CJK JP, Noto Sans CJK JP, IPAGothic, Noto Color Emoji, and DejaVu Sans Mono on Linux, then in the installed monospaced fonts, and then in every installed font.
 

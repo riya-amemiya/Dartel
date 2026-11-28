@@ -16,6 +16,7 @@ const MATCH_ALPHA: u8 = 90;
 const CURRENT_ALPHA: u8 = 170;
 const SCROLL_ALPHA: u8 = 128;
 const TAB_CELLS: u32 = 24;
+const JOINER: char = '\u{200D}';
 const DOUBLE: u8 = 3;
 const QUADRANTS: [u8; 10] = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14];
 const ARMS: &str = concat!(
@@ -154,12 +155,20 @@ struct Patch {
     pixels: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct Seen {
+    joiner: bool,
+    linker: bool,
+}
+
 pub struct Scene {
     fonts: Fonts,
     ascii: [[Option<Glyph>; 128]; 4],
     glyphs: HashMap<(char, usize), Glyph>,
     shaped: HashMap<(u16, usize), Glyph>,
     joins: Vec<Ligature>,
+    chains: Vec<Range<usize>>,
+    seen: Seen,
     text: String,
     patterns: [Option<Glyph>; 3],
     pen: [u32; 2],
@@ -260,6 +269,60 @@ fn swap(glyphs: &mut Vec<Quad>, from: usize, nominal: Option<Quad>, joined: Opti
             from + 1
         }
         (None, None) => from,
+    }
+}
+
+fn linking(c: char) -> bool {
+    matches!(c, '\u{1F3FB}'..='\u{1F3FF}' | '\u{1F1E6}'..='\u{1F1FF}')
+}
+
+fn candidates(cells: &[Cell]) -> bool {
+    cells.iter().fold(false, |found, cell| {
+        found | (0x1F1E6..=0x1F3FF).contains(&cell.code())
+    })
+}
+
+fn characters(marks: &[(u16, char)], column: usize, cell: Cell) -> impl Iterator<Item = char> {
+    cell.ch().into_iter().chain(
+        marks
+            .iter()
+            .filter(move |&&(mark, _)| cell.is_marked() && usize::from(mark) == column)
+            .map(|&(_, c)| c),
+    )
+}
+
+fn after(cells: &[Cell], column: usize) -> usize {
+    column + 1 + usize::from(cells[column].is_wide())
+}
+
+fn linked(marks: &[(u16, char)], cells: &[Cell], first: usize, last: usize, next: usize) -> bool {
+    let (Some(previous), Some(c)) = (cells[last].ch(), cells[next].ch()) else {
+        return false;
+    };
+    (cells[last].is_marked()
+        && marks
+            .iter()
+            .rfind(|&&(mark, _)| usize::from(mark) == last)
+            .is_some_and(|&(_, mark)| mark == JOINER))
+        || matches!(c, '\u{1F3FB}'..='\u{1F3FF}')
+        || (first == last
+            && matches!(previous, '\u{1F1E6}'..='\u{1F1FF}')
+            && matches!(c, '\u{1F1E6}'..='\u{1F1FF}'))
+}
+
+fn sequences(marks: &[(u16, char)], cells: &[Cell], found: &mut Vec<Range<usize>>) {
+    let mut column = 0;
+    while column < cells.len() {
+        let mut last = column;
+        let mut end = after(cells, column);
+        while end < cells.len() && linked(marks, cells, column, last, end) {
+            last = end;
+            end = after(cells, end);
+        }
+        if last > column {
+            found.push(column..end.min(cells.len()));
+        }
+        column = end;
     }
 }
 
@@ -643,6 +706,8 @@ impl Scene {
             glyphs: HashMap::new(),
             shaped: HashMap::new(),
             joins: Vec::new(),
+            chains: Vec::new(),
+            seen: Seen::default(),
             text: String::new(),
             patterns: [None; 3],
             pen: [0; 2],
@@ -732,6 +797,7 @@ impl Scene {
         self.ascii = [[None; 128]; 4];
         self.glyphs.clear();
         self.shaped.clear();
+        self.seen = Seen::default();
         self.patterns = [None; 3];
         self.pen = [0; 2];
         self.shelf = 0;
@@ -763,6 +829,12 @@ impl Scene {
         Some(glyph)
     }
 
+    fn cached(&self, c: char, face: usize) -> Option<Glyph> {
+        self.ascii[face]
+            .get(c as usize)
+            .map_or_else(|| self.glyphs.get(&(c, face)).copied(), |slot| *slot)
+    }
+
     fn shaped_glyph(&mut self, id: u16, face: usize) -> Option<Glyph> {
         if let Some(cached) = self.shaped.get(&(id, face)) {
             return Some(*cached);
@@ -774,6 +846,8 @@ impl Scene {
     }
 
     fn rasterize(&mut self, c: char, face: usize) -> Option<Glyph> {
+        self.seen.joiner |= c == JOINER;
+        self.seen.linker |= linking(c);
         let metrics = self.fonts.metrics();
         let size = [metrics.width, metrics.height];
         if let Some(alpha) = drawing(c, size, metrics.stroke) {
@@ -921,11 +995,12 @@ impl Scene {
             self.stale = true;
         }
         self.shift(term);
-        if !(self.compose_rows(term) && self.ligate_rows(term)) {
+        if !(self.compose_rows(term) && self.ligate_rows(term) && self.unite_rows(term)) {
             self.forget_glyphs();
             self.rows.resize_with(term.lines(), Row::default);
             self.compose_rows(term);
             self.ligate_rows(term);
+            self.unite_rows(term);
         }
         if term.has_virtual_placements() {
             self.compose_placeholders(term);
@@ -1158,7 +1233,7 @@ impl Scene {
                 term.palette(),
                 reverse,
             );
-            let glyph = self.shaped_glyph(ligature.glyph, look.face)?;
+            let glyph = self.shaped_glyph(ligature.glyph, self.fonts.face(look.face))?;
             for offset in 0..ligature.cells {
                 let left = self.padding + (ligature.start + offset) as i32 * width;
                 let nominal = self.glyph(cells[ligature.start + offset].ch()?, look.face)?;
@@ -1183,6 +1258,104 @@ impl Scene {
                         )
                     }),
                 );
+            }
+        }
+        Some(())
+    }
+
+    fn unite_rows(&mut self, term: &Term) -> bool {
+        !(self.seen.joiner || self.seen.linker)
+            || (0..term.lines())
+                .all(|line| !(self.stale || term.damage().line(line)) || self.unite(term, line))
+    }
+
+    fn unite(&mut self, term: &Term, line: usize) -> bool {
+        let source = term.visible_row(line);
+        let cells = &source.cells()[..source.used().min(term.cols())];
+        let marks = source.mark_entries();
+        if !(marks.iter().any(|&(_, mark)| mark == JOINER) || self.seen.linker && candidates(cells))
+        {
+            return true;
+        }
+        self.chains.clear();
+        sequences(marks, cells, &mut self.chains);
+        if self.chains.is_empty() {
+            return true;
+        }
+        let chains = std::mem::take(&mut self.chains);
+        let mut row = std::mem::take(&mut self.rows[line]);
+        let complete = self
+            .unite_glyphs(term, line, cells, &chains, &mut row)
+            .is_some();
+        self.rows[line] = row;
+        self.chains = chains;
+        complete
+    }
+
+    fn unite_glyphs(
+        &mut self,
+        term: &Term,
+        line: usize,
+        cells: &[Cell],
+        chains: &[Range<usize>],
+        row: &mut Row,
+    ) -> Option<()> {
+        let metrics = self.fonts.metrics();
+        let width = metrics.width as i32;
+        let top = self.top() + line as i32 * metrics.height as i32;
+        let reverse = term.modes().contains(Modes::REVERSE_VIDEO);
+        let marks = term.visible_row(line).mark_entries();
+        let mut index = 0;
+        for chain in chains {
+            self.text.clear();
+            for column in chain.clone().filter(|&column| !cells[column].is_spacer()) {
+                self.text.extend(characters(marks, column, cells[column]));
+            }
+            let first = look(
+                term.style(cells[chain.start].style()),
+                term.palette(),
+                reverse,
+            );
+            let Some((face, id)) = self.fonts.unite(&self.text, first.face) else {
+                continue;
+            };
+            let glyph = self.shaped_glyph(id, face)?;
+            let fit = (i32::from(glyph.advance) + width / 2) / width;
+            if glyph.size[0] == 0 || fit > chain.len() as i32 {
+                continue;
+            }
+            let mut joined = Some(textured(
+                self.padding
+                    + chain.start as i32 * width
+                    + centering(fit.max(1) * width, glyph)
+                    + i32::from(glyph.left),
+                top + metrics.ascent - i32::from(glyph.top),
+                glyph,
+                first.foreground,
+            ));
+            for column in chain.clone().filter(|&column| !cells[column].is_spacer()) {
+                let cell = cells[column];
+                let look = look(term.style(cell.style()), term.palette(), reverse);
+                let span = if cell.is_wide() { 2 * width } else { width };
+                let left = self.padding + column as i32 * width;
+                let mut shift = None;
+                for c in characters(marks, column, cell) {
+                    let nominal = self.cached(c, look.face)?;
+                    let shift = *shift.get_or_insert_with(|| centering(span, nominal));
+                    index = swap(
+                        &mut row.glyphs,
+                        index,
+                        (nominal.size[0] > 0).then(|| {
+                            textured(
+                                left + shift + i32::from(nominal.left),
+                                top + metrics.ascent - i32::from(nominal.top),
+                                nominal,
+                                look.foreground,
+                            )
+                        }),
+                        joined.take(),
+                    );
+                }
             }
         }
         Some(())
@@ -1520,7 +1693,8 @@ mod tests {
     use dartel_vt::Parser;
 
     use super::{
-        ARMS, Metrics, Pattern, Quad, band, drawing, mask, runs, solid, strokes, swap, thumb,
+        ARMS, Metrics, Pattern, Quad, band, candidates, drawing, mask, runs, sequences, solid,
+        strokes, swap, thumb,
     };
 
     fn spans(input: &str) -> Vec<(usize, usize)> {
@@ -1531,6 +1705,104 @@ mod tests {
         runs(&cells)
             .map(|(start, run)| (start, run.len()))
             .collect()
+    }
+
+    fn chains(input: &str) -> Vec<(usize, usize)> {
+        let mut term = Term::new(1, 20, 0);
+        Parser::new().advance(&mut term, input.as_bytes());
+        let row = term.visible_row(0);
+        let mut found = Vec::new();
+        sequences(row.mark_entries(), &row.cells()[..row.used()], &mut found);
+        found
+            .into_iter()
+            .map(|chain| (chain.start, chain.end))
+            .collect()
+    }
+
+    fn candidate(input: &str) -> bool {
+        let mut term = Term::new(1, 20, 0);
+        Parser::new().advance(&mut term, input.as_bytes());
+        let row = term.visible_row(0);
+        candidates(&row.cells()[..row.used()])
+    }
+
+    #[test]
+    fn regional_indicator_makes_a_line_a_candidate() {
+        assert!(candidate("a\u{1F1EF}b"));
+    }
+
+    #[test]
+    fn skin_tone_modifier_makes_a_line_a_candidate() {
+        assert!(candidate("\u{1F44D}\u{1F3FD}"));
+    }
+
+    #[test]
+    fn line_without_a_modifier_or_an_indicator_is_no_candidate() {
+        assert!(!candidate("a\u{1F468}\u{4E2D}\u{1F1E5}\u{1F400}"));
+    }
+
+    #[test]
+    fn joiners_link_every_member_of_a_family() {
+        assert_eq!(
+            chains("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}x"),
+            [(0, 6)]
+        );
+    }
+
+    #[test]
+    fn joiner_after_a_variation_selector_continues_the_sequence() {
+        assert_eq!(chains("\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}x"), [(0, 3)]);
+    }
+
+    #[test]
+    fn skin_tone_modifier_joins_the_emoji_before_it() {
+        assert_eq!(chains("\u{1F44D}\u{1F3FD}x"), [(0, 4)]);
+    }
+
+    #[test]
+    fn joiner_on_a_skin_tone_modifier_continues_the_sequence() {
+        assert_eq!(chains("\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}x"), [(0, 6)]);
+    }
+
+    #[test]
+    fn two_regional_indicators_form_one_flag() {
+        assert_eq!(chains("\u{1F1EF}\u{1F1F5}x"), [(0, 2)]);
+    }
+
+    #[test]
+    fn third_regional_indicator_stays_alone() {
+        assert_eq!(chains("\u{1F1EF}\u{1F1F5}\u{1F1FA}x"), [(0, 2)]);
+    }
+
+    #[test]
+    fn four_regional_indicators_form_two_flags() {
+        assert_eq!(
+            chains("\u{1F1EF}\u{1F1F5}\u{1F1FA}\u{1F1F8}x"),
+            [(0, 2), (2, 4)]
+        );
+    }
+
+    #[test]
+    fn emoji_without_a_joiner_stay_apart() {
+        assert_eq!(chains("\u{1F468}\u{1F469}x"), [(0, 0); 0]);
+    }
+
+    #[test]
+    fn variation_selector_alone_links_nothing() {
+        assert_eq!(chains("\u{2764}\u{FE0F}x"), [(0, 0); 0]);
+    }
+
+    #[test]
+    fn keycap_links_nothing() {
+        assert_eq!(chains("1\u{FE0F}\u{20E3}x"), [(0, 0); 0]);
+    }
+
+    #[test]
+    fn overwritten_member_ends_the_sequence_after_the_joiner() {
+        assert_eq!(
+            chains("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\x1b[1;3HX"),
+            [(0, 3)]
+        );
     }
 
     fn quad(x: i32) -> Quad {

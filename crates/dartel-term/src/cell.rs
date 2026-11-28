@@ -44,6 +44,12 @@ impl Cell {
 
     #[inline]
     #[must_use]
+    pub const fn code(self) -> u32 {
+        self.0 as u32
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn is_blank(self) -> bool {
         self.0 & (CODE | SPACER) == 0
     }
