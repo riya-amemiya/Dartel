@@ -1,6 +1,6 @@
 # Architecture
 
-Dartel is a terminal emulator split into seven crates. Five library crates
+Dartel is a terminal emulator split into eight crates. Six library crates
 turn the bytes a shell writes into terminal state and have no window or GPU
 dependency. `dartel-render` draws that state with the GPU, and the `dartel`
 binary owns the window, the tabs, and the input.
@@ -17,6 +17,7 @@ flowchart TD
     pty["dartel-pty"]
     term["dartel-term"]
     search["dartel-search"]
+    image["dartel-image"]
     vt["dartel-vt"]
     dartel --> render
     dartel --> config
@@ -27,18 +28,20 @@ flowchart TD
     render --> term
     config --> term
     term --> search
+    term --> image
     term --> vt
 ```
 
 | Crate | Modules | Responsibility |
 | --- | --- | --- |
 | `dartel-vt` | `lib`, `params`, `utf8`, `scan` | VT state machine that calls a `Perform` implementation, and the length of the leading run of printable ASCII with NEON, SSE2, and scalar implementations |
-| `dartel-search` | `lib` | Literal and regex search over a byte buffer |
-| `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `modes`, `charset` | Screen, scrollback, styles, modes, and the `Perform` implementation |
-| `dartel-pty` | `lib` | PTY allocation, login shell spawn in the home directory, resize |
+| `dartel-search` | `lib` | Literal and regex search over a byte buffer, and the URL around a byte offset |
+| `dartel-image` | `lib`, `base64`, `inflate`, `png`, `sixel`, `scale` | Base64, zlib, PNG, and Sixel decoding into RGBA pixels, and scaling into premultiplied pixels |
+| `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `graphics`, `keys`, `modes`, `charset` | Screen, scrollback, styles, modes, images, the kitty keyboard encoding, and the `Perform` implementation |
+| `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
-| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, font discovery and rasterization, the wgpu surface and draw call |
-| `dartel` | `main`, `app`, `session`, `input`, `clipboard` | The `config` subcommands, winit event handling, tabs, selection, prompts, shortcuts, the threads around each PTY, key encoding, and the clipboard |
+| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, font discovery and rasterization, the wgpu surface, the picture textures, and the draw calls |
+| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` subcommands, winit event handling, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
 
 ## Threads and data flow
 
@@ -67,7 +70,8 @@ sequenceDiagram
 `Session` holds the state the threads share.
 
 - `term` is the `Mutex<Term>`. The reader thread locks it for one read buffer
-  at a time. The read buffer is 1 MiB.
+  at a time. The read buffer is 1 MiB. An image is decoded under this lock,
+  when the last byte of its sequence arrives.
 - `frame_waiting` is set by the UI thread while it waits for the lock. The
   reader thread yields while the flag is set, so a flood of output cannot
   starve a frame.
@@ -91,6 +95,8 @@ flowchart TD
     key["Command+T or Ctrl+Shift+T"] --> spawn["Spawn a session with the next id"]
     spawn --> active["The new tab becomes the active tab"]
     click["Click on a tab"] --> active
+    digit["Command or Ctrl+Shift with a digit"] --> active
+    shut["Command+W or Ctrl+Shift+W"] --> close
     active --> stale["Scene drops its cached rows"]
     wake["Signal Wake with a session id"] --> which{"Session of the active tab"}
     which -- yes --> frame["Request a frame"]
@@ -112,7 +118,14 @@ flowchart TD
 - Every session is resized with the window, so a background tab has the right
   size when it becomes active.
 - Closing a tab calls `Session::close`. The shell is reaped at once when it has
-  exited, and on a `dartel-reap` thread otherwise.
+  exited. Otherwise its process group gets `SIGHUP`, and a `dartel-reap`
+  thread waits for it.
+- A new session starts in the directory that the shell of the active tab
+  reported with OSC 7, when the host in the report is empty, `localhost`, or
+  the name of this machine. `Term::directory` holds the report.
+- `Session::spawn` and `Session::resize` pass the cell size in pixels to
+  `Term::set_cell_size`, and the PTY window size carries the pixel size of the
+  text area, so applications can size images.
 
 ## Settings
 
@@ -163,8 +176,11 @@ flowchart LR
 `vt::Parser` is a byte-driven state machine. Most output is plain text, so the
 `Ground` state has a bulk path. `scan::printable_run` returns the length of the
 leading run of bytes in `0x20..=0x7E`, and the parser hands that whole run to
-`Perform::print_ascii` in one call. The `OscString` state also copies its
-payload in bulk. Every other state consumes one byte per step.
+`Perform::print_ascii` in one call. Three string states take their bytes in
+bulk too. `OscString` and `ApcString` copy their payload into one buffer, and
+`DcsPassthrough` hands each run of data to `Perform::put`. An application
+program command ends in `Perform::apc_dispatch` with its whole payload. Every
+other state consumes one byte per step.
 
 ```mermaid
 stateDiagram-v2
@@ -198,8 +214,10 @@ stateDiagram-v2
     DcsIntermediate --> DcsIgnore: parameter byte
     DcsPassthrough --> Escape: ESC
     DcsIgnore --> Escape: ESC
-    Escape --> SosPmApcString: SOS or PM or APC introducer
-    SosPmApcString --> Escape: ESC
+    Escape --> ApcString: APC introducer
+    ApcString --> Escape: ESC
+    Escape --> SosPmString: SOS or PM introducer
+    SosPmString --> Escape: ESC
 ```
 
 `CAN` and `SUB` return any state to `Ground`. `ESC` restarts a sequence from
@@ -210,7 +228,8 @@ maximal subpart. A sequence cut by the end of a read buffer is kept in a
 four-byte `pending` array and completed by the next `advance` call.
 
 Limits keep hostile input bounded. A CSI sequence keeps 32 parameters and 2
-intermediates. An OSC string keeps 16 parameters and 16 MiB of payload.
+intermediates. An OSC string keeps 16 parameters, and an OSC or APC string
+keeps 16 MiB of payload.
 
 ## Terminal state
 
@@ -223,6 +242,7 @@ classDiagram
         Pen pen
         Palette palette
         Modes modes
+        Graphics graphics
         Damage damage
         usize display_offset
     }
@@ -235,7 +255,9 @@ classDiagram
     class Row {
         Vec~Cell~ cells
         Vec marks
+        Vec~Tile~ tiles
         bool wrapped
+        u8 tags
     }
     class Cell {
         u32 code
@@ -263,16 +285,18 @@ classDiagram
   combining marks.
 - `Row` stores combining marks outside the cells, as `(column, char)` pairs,
   with at most 8 marks per cell. `wrapped` records that the row continues on
-  the next row.
+  the next row. `tags` holds the shell marks of the row, and `tiles` holds the
+  parts of images that the row shows.
 - `Grid` is a `VecDeque<Row>`. The last `lines` rows are the screen and the
   rows before them are scrollback. When scrollback is full, the oldest row is
   popped and reused as the new blank row.
 - `Term` owns two grids, one for the primary screen and one for the alternate
   screen. `grid` is whichever is active and `inactive` is the other, and
   switching screens swaps them. The alternate grid keeps no scrollback.
-- `StyleTable` interns each distinct `Style`. The key packs the three colors
-  and the attributes into a `u128`. A `StyleId` is a `u16`, and when the table
-  is full, `Term` rebuilds it from the styles that cells still reference.
+- `StyleTable` interns each distinct `Style`. The key packs the three colors,
+  the attributes, and the link id into a `u128`. A `StyleId` is a `u16`, and
+  when the table is full, `Term` rebuilds it from the styles that cells still
+  reference.
 - `Pen` defers interning. SGR sequences only change `pen.style`, and the style
   is interned when the next character is written.
 - `Damage` marks the lines a frame has to rebuild. Scrolling the view or
@@ -288,6 +312,105 @@ Resizing rewraps the primary screen when the column count changes. Rows joined
 by `wrapped` are merged into logical lines and split again at the new width,
 and the cursor follows its cell. The alternate screen is truncated or padded
 instead, because full-screen applications redraw it themselves.
+
+## Shell marks, links, and the working directory
+
+- OSC 133 writes shell marks into `Row::tags`. `A` tags the cursor row as a
+  prompt and `C` tags it as the start of output. `D` with an exit code other
+  than 0 tags the nearest prompt row at or above the cursor as failed. A
+  reflow moves the tags of a logical line to its first row, and the marks are
+  ignored on the alternate screen.
+- `Term::prompt_before`, `Term::prompt_after`, and `Term::last_output` read
+  the tags for the prompt shortcuts and the copy of the last output. `Scene`
+  draws a bar in palette color 9 in the left padding of a failed prompt row.
+- OSC 7 stores the host and the percent-decoded path of a `file` URL, and
+  `Term::directory` returns them.
+- OSC 8 interns the URI in a table of `Term` and stores its id in the `Style`,
+  so a link adds no bytes to a cell. The table holds 65535 URIs of at most
+  4096 bytes each, and `Scene` underlines the cells that carry a link id.
+- `Term::target_at` resolves a point for a modified click. A cell with an OSC
+  8 link gives that link when its scheme is `http`, `https`, `ftp`, `file`, or
+  `mailto`, and nothing otherwise. Without a link, `dartel_search::url_at`
+  looks for a URL around the point in the logical line, and the word under
+  the point is the last candidate, as a path. `opener` runs `open` or
+  `xdg-open` and waits for it on a `dartel-open` thread.
+- `Term::word_at` and `Term::line_at` give the spans of a double click and a
+  triple click. A word ends at a space, a tab, or one of
+  `` " ' ` ( ) [ ] { } < > | ; , ``.
+
+## Keyboard protocol
+
+`Term` keeps a stack of kitty keyboard flags for each screen, with at most 16
+entries, and `Term::keyboard` returns the flags on top. `CSI > u` pushes,
+`CSI < u` pops, `CSI = u` changes the top entry, and `CSI ? u` reports it.
+
+`keys::encode` is the encoder and has no window dependency. It takes a
+`Stroke`, which names the key, its shifted and base-layout forms, the text it
+types, the modifiers, and whether it was pressed, repeated, or released, and
+it returns bytes, `Legacy`, or `Nothing`. `input` in the binary builds the
+`Stroke` from a winit event, and on `Legacy` it falls back to the encoding
+used without the protocol. Caps Lock and Num Lock are not reported as
+modifiers.
+
+## Images
+
+Sixel and the kitty graphics protocol end in the same structure. `dartel-image`
+decodes the data into RGBA pixels, `Term` turns one placement into one
+`Picture` and cuts it into tiles, one per row, and `Scene` turns each tile into
+a quad.
+
+```mermaid
+flowchart TD
+    apc["APC that starts with G, through Perform apc_dispatch"] --> keys["Parse the control keys"]
+    keys --> more{"More chunks follow"}
+    more -- yes --> keep["Decode the base64 of the chunk and keep the bytes"]
+    keep --> keys
+    more -- no --> load["Inflate, then read RGB, RGBA, or PNG"]
+    load --> store["Keep the image under its id"]
+    store --> place["Crop, scale, and premultiply into a Picture"]
+    dcs["DCS with final byte q, through Perform hook, put, and unhook"] --> sixel["Decode the Sixel data"]
+    sixel --> place
+    place --> tiles["One Tile on each Row the picture covers"]
+    tiles --> quads["Scene builds one quad per tile"]
+    quads --> draw["Gpu draws each Picture from its own texture"]
+```
+
+- `dartel-image` has no dependency. `inflate` reads stored, fixed, and dynamic
+  blocks and stops at an output limit. `png` checks the checksum of every
+  chunk and reads every color type and bit depth, the five filters, and Adam7
+  interlacing, and it keeps the high byte of 16-bit samples. `sixel` paints
+  into rows that grow as the data moves right and down.
+- A `Picture` is the premultiplied RGBA pixels of one placement at its display
+  size, with a serial number that orders the pictures of one `Term`.
+  `Image::premultiplied` crops the source rectangle and scales it by averaging
+  the source pixels under each output pixel.
+- A `Tile` is the part of a `Picture` that one row shows. It holds the first
+  column, the offset inside the cell, the source rectangle, and the cell size
+  at placement. Tiles live in `Row`, so scrolling, the scrollback limit, and
+  reflow move and drop them with their row.
+- Tiles of the kitty protocol stay when cells are written or erased, and
+  `Row::clear`, which the partial forms of erase display use, keeps them.
+  Sixel tiles are fragile. `Row::release` cuts the written columns out of
+  them, and `Row::clear` drops them. `Row::reset`, which runs when a row is
+  recycled or the whole screen is cleared, drops every tile.
+- A kitty placement moves the cursor as kitty does, right by the columns of
+  the placement and down to its last row. The protocol text says down by the
+  number of rows. A Sixel image leaves the cursor on the row below the image,
+  in the column where the image started.
+- Each chunk of a kitty transfer is decoded from base64 on its own, because
+  chafa pads every chunk. A transfer keeps at most the bytes of one image of
+  4096 by 4096 pixels.
+- `Term` keeps the transmitted images by id, the newest id for each image
+  number, and a weak reference to every placed `Picture`. Both sets are held
+  to 256 MiB by dropping the oldest entries.
+- Replies to graphics commands and to `CSI 14 t` and `CSI 16 t` go through the
+  reply buffer that other queries use. The window sets the cell size with
+  `Term::set_cell_size`.
+- Animation, Unicode placeholders, relative placements, the indexed formats,
+  and transmission through files or shared memory are refused, with an
+  `EINVAL` reply when the command names an image. `umt_from_base64` returns a
+  UTF-8 string, so image payloads are decoded by `dartel_image::base64`
+  instead.
 
 ## Search
 
@@ -316,18 +439,20 @@ has no uppercase letter.
 ## Rendering
 
 `Scene` converts rows into `Quad` instances. A `Quad` is 20 bytes and holds a
-pixel rectangle, an atlas origin, and a color. The whole frame is one
-instanced draw call over a four-vertex triangle strip.
+pixel rectangle, a texture rectangle, and a color. A frame without images is
+one instanced draw call over a four-vertex triangle strip. A frame with images
+draws the text, each picture from its own texture, and the overlays in
+separate calls over ranges of the same instance buffer.
 
 ```mermaid
 flowchart TD
     damage["Damaged lines in Term"] --> rebuild["Rebuild the cached quads of those lines"]
     rebuild --> cached{"Glyph in the cache"}
-    cached -- yes --> frame["Concatenate backgrounds, then glyphs, then overlays"]
+    cached -- yes --> frame["Concatenate backgrounds, glyphs, pictures, and overlays"]
     cached -- no --> raster["Rasterize with swash and upload to the atlas"]
     raster --> frame
     frame --> buffer["Write the instance buffer"]
-    buffer --> draw["One instanced draw call"]
+    buffer --> draw["One instanced draw call per layer"]
 ```
 
 - `Scene` caches the background quads and glyph quads of each line. A frame
@@ -339,6 +464,19 @@ flowchart TD
   window.
 - The cached quads of the lines start below the tab bar. Showing or hiding the
   bar marks every line stale.
+- `Scene` keeps the picture quads of each line beside its background and glyph
+  quads. A frame appends them after the glyphs, ordered by serial number, and
+  lists the quads as layers: the text, one layer for each run of quads that
+  share a `Picture`, and the overlays. `Gpu::draw` binds the atlas or the
+  texture of the picture for each layer and draws its range of instances.
+- `Gpu` creates the texture of a `Picture` when a frame first uses it. The key
+  is the address of the `Arc<Picture>`, because serial numbers repeat across
+  tabs. A texture is dropped when its `Picture` is gone, or when the textures
+  pass 256 MiB and the frame does not use it. A picture larger than the
+  texture limit of the device is not drawn.
+- The texture rectangle of a quad has an origin and a size, and a size of zero
+  marks a solid quad. A tile placed at another cell size is drawn scaled, from
+  the nearest texel.
 - The glyph atlas is one 2048 by 2048 RGBA texture filled shelf by shelf. When
   it is full, the glyph cache is dropped and the visible lines are rasterized
   again.
@@ -348,15 +486,23 @@ flowchart TD
   character on first use. The family is the one in the settings when it is
   installed, and the platform list otherwise. Color glyphs are stored
   premultiplied.
-- The fragment shader reads the atlas with `textureLoad`, so no sampler is
-  bound. The surface uses a non-sRGB format and premultiplied alpha blending.
+- The fragment shader reads the bound texture with `textureLoad`, so no
+  sampler is bound. The surface uses a non-sRGB format and premultiplied alpha
+  blending.
 
 ## Input
 
-- `input::encode` turns a key event into bytes, using the terminal modes for
-  application cursor keys.
-- Shortcuts are handled before encoding. Paste, copy, search, a new tab, and
-  the two settings prompts use Command on macOS and Ctrl+Shift on Linux.
+- `input::encode` turns a key event into bytes. While kitty keyboard flags are
+  set it asks `keys::encode` first, and otherwise it uses the terminal modes
+  for application cursor keys. A key release is encoded only for that
+  protocol.
+- Shortcuts are handled before encoding and use Command on macOS and
+  Ctrl+Shift on Linux. They are paste, copy, the copy of the last output,
+  search, the prompt jumps, a new tab, closing a tab, tab selection, the font
+  size, and the two settings prompts. Tab selection and the font size match
+  the physical key, so they do not depend on the keyboard layout.
+- A press with the shortcut modifier opens the target under the pointer. Two
+  and three presses on one cell within 500 ms select a word and a line.
 - A settings prompt takes keys before the search prompt, and the search prompt
   takes them before the shell.
 - Mouse events are reported to the application when it enabled a mouse mode,
@@ -378,6 +524,7 @@ flowchart TD
 | Default font family | Menlo, then Monaco | DejaVu Sans Mono, then Liberation Mono |
 | Clipboard | `pbpaste`, `pbcopy` | `wl-paste` and `wl-copy`, then `xclip` |
 | Shortcut modifier | Command | Ctrl+Shift |
+| Opener for links | `open` | `xdg-open` |
 | Meta key | Left Option | Alt |
 | Default shell without `SHELL` | `/bin/zsh` | `/bin/sh` |
 | Search workers | At most 6 | All available cores |

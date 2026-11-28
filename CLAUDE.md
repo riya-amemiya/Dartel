@@ -34,30 +34,49 @@ Dartel/
 │   │       └── vt_test.rs
 │   ├── dartel-search/        # Search over a byte buffer
 │   │   ├── src/
-│   │   │   └── lib.rs        # Literal and regex queries, parallel scan
+│   │   │   └── lib.rs        # Literal and regex queries, parallel scan, URL detection
 │   │   └── tests/
 │   │       └── search_test.rs
+│   ├── dartel-image/         # Image decoders, no dependency
+│   │   ├── src/
+│   │   │   ├── lib.rs        # Image and its constructors
+│   │   │   ├── base64.rs     # Base64 decoder
+│   │   │   ├── inflate.rs    # Deflate and zlib decoder
+│   │   │   ├── png.rs        # PNG decoder
+│   │   │   ├── scale.rs      # Crop, scale, and premultiply
+│   │   │   └── sixel.rs      # Sixel decoder
+│   │   └── tests/
+│   │       ├── base64_test.rs
+│   │       ├── image_test.rs
+│   │       ├── inflate_test.rs
+│   │       ├── png_test.rs
+│   │       ├── scale_test.rs
+│   │       └── sixel_test.rs
 │   ├── dartel-term/          # Terminal state
 │   │   ├── src/
 │   │   │   ├── lib.rs        # Term, cursor view, damage, public accessors
 │   │   │   ├── cell.rs       # 8-byte cell
 │   │   │   ├── charset.rs    # DEC special graphics
 │   │   │   ├── color.rs      # Rgb, Color, Palette, xterm 256-color table
-│   │   │   ├── find.rs       # Scrollback search and text extraction
+│   │   │   ├── find.rs       # Scrollback search, text extraction, words, link targets, prompt rows
+│   │   │   ├── graphics.rs   # Kitty graphics commands, Sixel placement, pictures and tiles
 │   │   │   ├── grid.rs       # Rows, scrollback, scrolling, resize, reflow
+│   │   │   ├── keys.rs       # Kitty keyboard protocol encoder
 │   │   │   ├── modes.rs      # Terminal mode flags
-│   │   │   ├── osc.rs        # OSC title, palette, and clipboard sequences
-│   │   │   ├── perform.rs    # Perform implementation, CSI and ESC dispatch
-│   │   │   ├── row.rs        # Row edits, wide characters, combining marks
+│   │   │   ├── osc.rs        # OSC title, palette, clipboard, directory, link, and shell mark sequences
+│   │   │   ├── perform.rs    # Perform implementation, CSI, ESC, DCS, and APC dispatch
+│   │   │   ├── row.rs        # Row edits, wide characters, combining marks, shell marks, image tiles
 │   │   │   ├── screen.rs     # Writing, cursor movement, erase, alternate screen
 │   │   │   ├── sgr.rs        # SGR attributes and colors
 │   │   │   └── style.rs      # Style interning
 │   │   └── tests/
-│   │       ├── find_test.rs  # Term::search
+│   │       ├── find_test.rs  # Term::search, words, link targets, prompt rows
+│   │       ├── graphics_test.rs
+│   │       ├── keys_test.rs
 │   │       └── term_test.rs
 │   ├── dartel-pty/           # Unix only
 │   │   ├── src/
-│   │   │   └── lib.rs        # PTY allocation, login shell spawn, resize
+│   │   │   └── lib.rs        # PTY allocation, login shell spawn, resize, hangup, host name
 │   │   └── tests/
 │   │       └── pty_test.rs
 │   ├── dartel-config/        # Settings
@@ -71,8 +90,8 @@ Dartel/
 │   │   └── src/
 │   │       ├── lib.rs        # Exports
 │   │       ├── font.rs       # Font discovery, fallback, rasterization
-│   │       ├── gpu.rs        # wgpu surface, glyph atlas, draw call
-│   │       ├── scene.rs      # Rows to quads, glyph cache, overlays, tab bar
+│   │       ├── gpu.rs        # wgpu surface, glyph atlas, picture textures, draw calls
+│   │       ├── scene.rs      # Rows to quads, glyph cache, pictures, overlays, tab bar
 │   │       └── shader.wgsl   # Vertex and fragment shader
 │   └── dartel/               # Binary crate
 │       ├── macos/
@@ -84,6 +103,7 @@ Dartel/
 │           ├── app.rs        # winit handler, tabs, selection, prompts, shortcuts
 │           ├── clipboard.rs  # Clipboard through the platform commands
 │           ├── input.rs      # Key event to byte sequence encoding
+│           ├── opener.rs     # Links and paths through the platform opener
 │           └── session.rs    # Reader and writer threads around the PTY
 ├── docs/
 │   └── architecture.md       # Design notes with diagrams
@@ -184,6 +204,16 @@ Build and test for that target run on the macOS CI job.
   value as the scalar one for every input.
 - Every tab is resized with the window, and `Scene::invalidate` runs when the
   active tab changes, because `Scene` caches the rows of one `Term`.
+- An image is one `Picture` cut into `Tile`s that live in the rows it covers.
+  `Row::reset` drops every tile, `Row::clear` keeps the tiles of the kitty
+  protocol, and `Row::release` cuts the written cells out of Sixel tiles. A new
+  way to blank a row picks one of the three.
+- A `Picture` holds premultiplied RGBA. Its serial number orders the pictures
+  of one `Term` and repeats across tabs, so `Gpu` keys textures by the address
+  of the `Arc<Picture>`.
+- The counts in `Scene::layers` add up to the length of `Scene::quads`. The
+  texture rectangle of a `Quad` has a size, and a size of zero means a solid
+  quad.
 - The TOML file is parsed only by `dartel_config::load`. Start-up reads the
   state file through `Config::decode`. A change to the fields of `Config`
   changes the layout of the state file, so change the last byte of `MAGIC`
@@ -199,6 +229,8 @@ Build and test for that target run on the macOS CI job.
 - Non-ASCII test data uses `\u{...}` escapes.
 - Terminal tests feed bytes through `Parser::advance` and assert on the grid,
   the cursor, or the reply bytes.
+- Decoder tests in `dartel-image` read bytes that ImageMagick and gzip wrote,
+  and build the error cases from parts in the test file.
 - A test that depends on an environment variable calls a function that takes
   the value as an argument, such as `start_directory` and
   `Locations::resolve`, because `std::env::set_var` is unsafe.
@@ -229,11 +261,23 @@ Without a window manager the window has no focus, so run
 `xdotool windowfocus` with the id that `xdotool search` printed before typing.
 `xdotool key ctrl+shift+f` opens the search prompt, `ctrl+shift+c` copies the
 selection, `ctrl+shift+v` pastes, `ctrl+shift+t` opens a tab, and
-`ctrl+shift+s` and `ctrl+shift+l` open the settings prompts. Set `HOME` to a
+`ctrl+shift+s` and `ctrl+shift+l` open the settings prompts.
+`ctrl+shift+w` closes the tab, `ctrl+shift+1` selects the first tab,
+`ctrl+shift+equal`, `ctrl+shift+minus`, and `ctrl+shift+0` change the font
+size, and `ctrl+shift+o` copies the last output. Set `HOME` to a
 scratch directory and unset `XDG_CONFIG_HOME` and `XDG_STATE_HOME` for the
 run, so the settings files stay out of the real home directory. Running on
 macOS itself, with Metal, the system fonts, `pbcopy`, and the IME, cannot be
 checked this way.
+
+Images were checked in that window with these programs:
+
+```sh
+apt-get install -y -qq chafa libsixel-bin
+img2sixel image.png
+chafa --format sixels image.png
+chafa --format kitty image.png
+```
 
 ## Application Icon
 
@@ -290,7 +334,8 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
   dependency. Its designs are ported instead, and `docs/architecture.md` lists
   them.
 - `umt_rust` already provides hex color parsing and base64 decoding. Prefer it
-  over a new dependency when it has the function.
+  over a new dependency when it has the function. `umt_from_base64` returns a
+  UTF-8 string, so binary payloads go through `dartel_image::base64`.
 - The settings file has no parser dependency. `dartel-config` parses TOML in
   `toml.rs`, and a new setting needs a field in `Config`, its key in
   `from_toml` and `to_toml`, its bytes in `encode` and `decode`, and a row in
