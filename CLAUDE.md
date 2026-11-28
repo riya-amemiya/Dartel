@@ -96,7 +96,7 @@ Dartel/
 │   │       ├── lib.rs        # Exports
 │   │       ├── font.rs       # System font scan, font discovery, fallback, shaping, rasterization
 │   │       ├── gpu.rs        # wgpu surface, glyph atlas, picture textures, draw calls
-│   │       ├── scene.rs      # Rows to quads, glyph cache, ligatures, drawn box and block glyphs, pictures, overlays, tab bar
+│   │       ├── scene.rs      # Rows to quads, glyph cache, ligatures, emoji sequences, drawn box and block glyphs, pictures, overlays, tab bar
 │   │       └── shader.wgsl   # Vertex and fragment shader
 │   └── dartel/               # Binary crate
 │       ├── macos/
@@ -329,6 +329,20 @@ Build and test for that target run on the macOS CI job.
   instruction count. A ligature covers the cells of its characters and never
   crosses a style change, a wide character, a cell with combining marks, or a
   character that `Scene` draws itself.
+- Emoji sequences are joined by `Scene::unite_rows` after
+  `Scene::ligate_rows`, on the same rebuilt lines, by swapping glyph quads
+  that `Scene::compose_row` built, and only while a flag of `Scene::seen` is
+  set. `Scene::rasterize` sets `joiner` for a zero width joiner and `linker`
+  for a skin tone modifier or a regional indicator, and
+  `Scene::forget_glyphs` clears them, so a frame without these characters
+  pays one check. While `linker` is set, every rebuilt line is scanned by
+  `candidates`, so keep that scan free of branches. `Scene::unite_glyphs` reads
+  the glyph cache through `Scene::cached` and the marks through
+  `Row::mark_entries`, and `Fonts::unite` finds the face through
+  `Fonts::drawing`, so `Scene::glyph`, `Row::marks`, and `Fonts::resolve`
+  keep the callers they had and `Scene::compose_rows` keeps its instruction
+  count. A joined glyph never changes the cells, and one wider than the cells
+  of its sequence is not drawn.
 - `Config::keys` holds parsed shortcuts, and no key event parses text. An
   `Action` has an entry in `ACTION_NAMES`, `Action::ALL`, and `DEFAULT_KEYS`
   at the same index, and an arm in `View::shortcut`. Adding one changes the
@@ -353,8 +367,8 @@ Build and test for that target run on the macOS CI job.
 - The `dartel-render` and `dartel` crates have no integration tests. Check
   them on a display. `scene.rs` unit-tests the private helpers that build the
   underline masks and the masks of box drawing characters, block elements,
-  and Powerline arrows, and the helpers that split ligature runs and swap
-  glyph quads.
+  and Powerline arrows, and the helpers that split ligature runs, find emoji
+  sequences, and swap glyph quads.
 
 ## Checking the Window on Linux Without a Display
 

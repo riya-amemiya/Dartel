@@ -40,7 +40,7 @@ flowchart TD
 | `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `graphics`, `placeholder`, `keys`, `modes`, `charset` | Screen, scrollback, styles, modes, images, Unicode placeholders, the kitty keyboard encoding, and the `Perform` implementation |
 | `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
-| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, ligatures, font discovery, shaping, and rasterization, the wgpu surface, the picture textures, and the draw calls |
+| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, ligatures, emoji sequences, font discovery, shaping, and rasterization, the wgpu surface, the picture textures, and the draw calls |
 | `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, windows, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
 
 ## Threads and data flow
@@ -395,7 +395,9 @@ classDiagram
   with at most 8 marks per cell, and `tiles` holds the parts of images that
   the row shows. Both live in `Extras`. A row allocates it for its first mark
   or tile and frees it when both are empty, so `Row::extras` is `None` for a
-  row of plain text and a `Row` is 40 bytes. `wrapped` records that the row
+  row of plain text and a `Row` is 40 bytes. `Row::marks` gives the marks of
+  one cell, and `Row::mark_entries` gives all pairs of the row in the order
+  they were added. `wrapped` records that the row
   continues on the next row, and `tags` holds the shell marks of the row.
 - `Row::used` counts the leading cells that may differ from the default cell,
   so clearing a row and erasing to the end of a line write only those cells.
@@ -735,8 +737,11 @@ flowchart TD
     mask --> ligatures{"Font with ligatures"}
     raster --> ligatures
     ligatures -- yes --> shape["Shape the runs of those lines and swap in the ligature glyphs"]
-    ligatures -- no --> frame
-    shape --> frame
+    ligatures -- no --> sequences{"Joiner, skin tone modifier, or regional indicator rasterized since the glyph cache was cleared"}
+    shape --> sequences
+    sequences -- yes --> unite["Shape the emoji sequences of those lines and swap in the joined glyphs"]
+    sequences -- no --> frame
+    unite --> frame
     frame --> upload["Upload the kept glyphs to the atlas"]
     upload --> buffer["Write the instance buffer"]
     buffer --> draw["One instanced draw call per layer"]
@@ -853,10 +858,40 @@ flowchart TD
   on the first cell or removes it on the others. A ligature glyph is placed
   like a character glyph across the cells of the ligature, so the columns
   around it do not move, and a glyph that reaches into the previous cell draws
-  there. Ligature glyphs are cached in a `HashMap` keyed by glyph id and face,
-  go through `Scene::place` and `Scene::flush` like other glyphs, and are
-  dropped with the glyph cache. The cursor, selection, and search read the
-  cells and ignore ligatures.
+  there. Ligature glyphs are cached in a `HashMap` keyed by glyph id and the
+  index of the loaded face, so a glyph of a fallback face never shares a key
+  with a glyph of the font family. They go through `Scene::place` and
+  `Scene::flush` like other glyphs, and are dropped with the glyph cache. The
+  cursor, selection, and search read the cells and ignore ligatures.
+- Emoji sequences are joined by `Scene::unite_rows`, which runs after
+  `Scene::ligate_rows` over the same rebuilt lines while a flag of
+  `Scene::seen` is set. `Scene::rasterize` sets `joiner` when it rasterizes a
+  zero width joiner U+200D, and `linker` when it rasterizes a skin tone
+  modifier from U+1F3FB to U+1F3FF or a regional indicator.
+  `Scene::forget_glyphs` clears both, so a frame of text without them pays
+  one check in `Scene::compose`.
+- `Scene::unite` looks for sequences only in a line that can hold one. A line
+  with a joiner among its marks can, and while `linker` is set, so can a line
+  where `candidates` finds a character from U+1F1E6 to U+1F3FF, the range
+  that holds the regional indicators and the skin tone modifiers.
+  `candidates` reads `Cell::code` of every cell without an early exit, so the
+  compiler turns it into vector instructions.
+- `sequences` walks the cells of such a line once. A cell whose last combining mark
+  is a joiner continues into the next cell, a skin tone modifier continues the
+  cell before it, and regional indicators pair from the left. A sequence keeps
+  the cells that the characters took, one or two per character.
+- `Fonts::unite` shapes the text of a sequence, its characters with their
+  marks, with the face that draws its first character, and keeps the glyph
+  only when shaping returns exactly one. The result is cached per style in a
+  `HashMap` keyed by the text, which is cleared when it reaches 4096 entries.
+  A glyph whose advance rounds to more cells than the sequence covers is not
+  used.
+- `Scene::unite_glyphs` swaps the quad of the first character for the joined
+  glyph, centered on the cells the glyph takes from the first cell of the
+  sequence, and removes the quads of the other characters and their marks
+  with `swap`, as `Scene::join_glyphs` does. Joined glyphs share the cache of
+  ligature glyphs. The cells do not change, so the cursor, selection, search,
+  copy, and the columns after a sequence are the same as without it.
 - `font::Fonts` loads four faces of one family and finds a fallback face per
   character on first use. The family is the one in the settings when it is
   installed, and the platform list otherwise. Color glyphs are stored

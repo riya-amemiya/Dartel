@@ -445,6 +445,33 @@ fn combining_marks_attach_to_the_previous_cell() {
 }
 
 #[test]
+fn mark_entries_list_every_mark_of_a_row_with_its_column() {
+    let term = fed(1, 6, "e\u{0301}xa\u{0308}");
+    assert_eq!(
+        term.grid().row(0).mark_entries(),
+        [(0, '\u{0301}'), (2, '\u{0308}')]
+    );
+}
+
+#[test]
+fn mark_entries_are_empty_for_a_row_without_marks() {
+    let term = fed(1, 6, "ex");
+    assert_eq!(term.grid().row(0).mark_entries(), []);
+}
+
+#[test]
+fn cell_code_is_the_scalar_value_of_its_character() {
+    let term = fed(1, 6, "\u{1F1EF}");
+    assert_eq!(term.grid().row(0).cells()[0].code(), 0x1F1EF);
+}
+
+#[test]
+fn cell_code_of_an_empty_cell_is_zero() {
+    let term = fed(1, 6, "a");
+    assert_eq!(term.grid().row(0).cells()[1].code(), 0);
+}
+
+#[test]
 fn combining_marks_attach_to_a_wide_character() {
     let term = fed(1, 6, "\u{304B}\u{3099}");
     assert_eq!(

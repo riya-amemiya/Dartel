@@ -87,7 +87,7 @@ fn resolve(style: Style, numbers: [Option<u32>; 3], left: Option<Left>) -> Left 
 pub(super) fn seats(row: &Row, style: impl Fn(StyleId) -> Style) -> impl Iterator<Item = Seat> {
     let cells = &row.cells()[..row.used()];
     let mut numbers = vec![[None; 3]; cells.len()];
-    for &(at, mark) in row.mark_list() {
+    for &(at, mark) in row.mark_entries() {
         if let Some(slot) = numbers
             .get_mut(usize::from(at))
             .and_then(|slots| slots.iter_mut().find(|slot| slot.is_none()))
