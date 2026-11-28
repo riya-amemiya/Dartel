@@ -259,12 +259,15 @@ classDiagram
     }
     class Row {
         Vec~Cell~ cells
-        Vec marks
-        Vec~Tile~ tiles
+        Box~Extras~ extras
         u16 used
         bool wide
         bool wrapped
         u8 tags
+    }
+    class Extras {
+        Vec marks
+        Vec~Tile~ tiles
     }
     class Cell {
         u64 bits
@@ -283,6 +286,7 @@ classDiagram
     Term *-- Damage
     Grid *-- Row
     Row *-- Cell
+    Row o-- Extras
     Cell ..> StyleTable : StyleId is an index
 ```
 
@@ -291,14 +295,17 @@ classDiagram
   the spacer cell after a wide character, and attached combining marks. The
   default cell is zero.
 - `Row` stores combining marks outside the cells, as `(column, char)` pairs,
-  with at most 8 marks per cell. `wrapped` records that the row continues on
-  the next row. `tags` holds the shell marks of the row, and `tiles` holds the
-  parts of images that the row shows.
+  with at most 8 marks per cell, and `tiles` holds the parts of images that
+  the row shows. Both live in `Extras`. A row allocates it for its first mark
+  or tile and frees it when both are empty, so `Row::extras` is `None` for a
+  row of plain text and a `Row` is 40 bytes. `wrapped` records that the row
+  continues on the next row, and `tags` holds the shell marks of the row.
 - `Row::used` counts the leading cells that may differ from the default cell,
   so clearing a row and erasing to the end of a line write only those cells.
   `Row::wide` records that the row may hold a wide character. A write looks
   for a wide character to split only when `wide` is set and the write starts
-  inside the used cells.
+  inside the used cells, and it looks at marks and tiles only when the row has
+  `Extras`.
 - `Grid` is a ring of rows, a `Vec<Row>` and the index `head` of its oldest
   row. The last `lines` rows are the screen and the rows before them are
   scrollback. When scrollback is full, a line feed at the bottom clears the
