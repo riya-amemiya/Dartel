@@ -6,17 +6,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use dartel_pty::{Pty, Size, login_shell};
-use dartel_term::Term;
+use dartel_term::{Palette, Term};
 use dartel_vt::Parser;
 use winit::event_loop::EventLoopProxy;
 
-const HISTORY: usize = 10_000;
 const READ_BUFFER: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signal {
-    Wake,
-    Exit,
+    Wake(u64),
+    Exit(u64),
 }
 
 struct Shared {
@@ -26,6 +25,7 @@ struct Shared {
 }
 
 pub struct Session {
+    id: u64,
     shared: Arc<Shared>,
     pty: Pty,
     input: Sender<Vec<u8>>,
@@ -36,6 +36,7 @@ fn lock(term: &Mutex<Term>) -> MutexGuard<'_, Term> {
 }
 
 fn pump(
+    id: u64,
     mut reader: File,
     shared: &Shared,
     input: &Sender<Vec<u8>>,
@@ -62,20 +63,27 @@ fn pump(
             let _ = input.send(reply);
         }
         if !shared.wake_pending.swap(true, Ordering::AcqRel) {
-            let _ = proxy.send_event(Signal::Wake);
+            let _ = proxy.send_event(Signal::Wake(id));
         }
     }
-    let _ = proxy.send_event(Signal::Exit);
+    let _ = proxy.send_event(Signal::Exit(id));
 }
 
 impl Session {
-    pub fn spawn(size: Size, proxy: EventLoopProxy<Signal>) -> io::Result<Session> {
+    pub fn spawn(
+        id: u64,
+        size: Size,
+        palette: Palette,
+        history: usize,
+        proxy: EventLoopProxy<Signal>,
+    ) -> io::Result<Session> {
         let pty = Pty::spawn(login_shell(), size)?;
         let shared = Arc::new(Shared {
-            term: Mutex::new(Term::new(
+            term: Mutex::new(Term::with_palette(
                 usize::from(size.lines),
                 usize::from(size.cols),
-                HISTORY,
+                history,
+                palette,
             )),
             frame_waiting: AtomicBool::new(false),
             wake_pending: AtomicBool::new(false),
@@ -95,9 +103,18 @@ impl Session {
         thread::Builder::new().name("dartel-read".into()).spawn({
             let shared = Arc::clone(&shared);
             let input = input.clone();
-            move || pump(reader, &shared, &input, &proxy)
+            move || pump(id, reader, &shared, &input, &proxy)
         })?;
-        Ok(Session { shared, pty, input })
+        Ok(Session {
+            id,
+            shared,
+            pty,
+            input,
+        })
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     pub fn send(&self, bytes: Vec<u8>) {
@@ -120,5 +137,13 @@ impl Session {
         self.term()
             .resize(usize::from(size.lines), usize::from(size.cols));
         let _ = self.pty.resize(size);
+    }
+
+    pub fn close(mut self) {
+        if !matches!(self.pty.try_wait(), Ok(Some(_))) {
+            let _ = thread::Builder::new()
+                .name("dartel-reap".into())
+                .spawn(move || self.pty.wait());
+        }
     }
 }

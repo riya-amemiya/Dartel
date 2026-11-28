@@ -9,6 +9,7 @@ use crate::gpu::{ATLAS_SIZE, Gpu, Quad};
 const SELECTION_ALPHA: u8 = 80;
 const MATCH_ALPHA: u8 = 90;
 const CURRENT_ALPHA: u8 = 170;
+const TAB_CELLS: u32 = 24;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Glyph {
@@ -43,6 +44,9 @@ pub struct Overlay<'a> {
     pub matches: &'a [Span],
     pub current: Option<Span>,
     pub banner: Option<&'a str>,
+    pub tabs: &'a [String],
+    pub active: usize,
+    pub width: u32,
 }
 
 struct Label<'a> {
@@ -63,6 +67,7 @@ pub struct Scene {
     rows: Vec<Row>,
     quads: Vec<Quad>,
     padding: i32,
+    bar: bool,
     stale: bool,
 }
 
@@ -72,6 +77,15 @@ fn blend(ink: Rgb, paper: Rgb) -> Rgb {
         mix(ink.r, paper.r),
         mix(ink.g, paper.g),
         mix(ink.b, paper.b),
+    )
+}
+
+fn tint(paper: Rgb, ink: Rgb) -> Rgb {
+    let mix = |paper: u8, ink: u8| ((u16::from(paper) * 7 + u16::from(ink)) / 8) as u8;
+    Rgb::new(
+        mix(paper.r, ink.r),
+        mix(paper.g, ink.g),
+        mix(paper.b, ink.b),
     )
 }
 
@@ -126,6 +140,18 @@ fn textured(x: i32, y: i32, glyph: Glyph, color: Rgb) -> Quad {
     }
 }
 
+fn tail(text: &str, cells: usize) -> &str {
+    let mut used = 0;
+    text.char_indices()
+        .rev()
+        .take_while(|(_, c)| {
+            used += c.width().unwrap_or(0);
+            used <= cells
+        })
+        .last()
+        .map_or("", |(index, _)| &text[index..])
+}
+
 fn centering(span: i32, glyph: Glyph) -> i32 {
     if (span - i32::from(glyph.advance)).abs() <= 1 {
         0
@@ -136,9 +162,9 @@ fn centering(span: i32, glyph: Glyph) -> i32 {
 
 impl Scene {
     #[must_use]
-    pub fn new(font_size: f32, padding: i32) -> Option<Scene> {
+    pub fn new(font_family: &str, font_size: f32, padding: i32) -> Option<Scene> {
         Some(Scene {
-            fonts: Fonts::new(font_size)?,
+            fonts: Fonts::new(font_family, font_size)?,
             ascii: [[None; 128]; 4],
             glyphs: HashMap::new(),
             pen: [0; 2],
@@ -146,8 +172,45 @@ impl Scene {
             rows: Vec::new(),
             quads: Vec::new(),
             padding,
+            bar: false,
             stale: true,
         })
+    }
+
+    pub fn show_tabs(&mut self, visible: bool) {
+        self.stale |= self.bar != visible;
+        self.bar = visible;
+    }
+
+    pub fn invalidate(&mut self) {
+        self.stale = true;
+    }
+
+    fn header(&self) -> i32 {
+        if self.bar {
+            self.fonts.metrics().height as i32 + self.padding
+        } else {
+            0
+        }
+    }
+
+    fn top(&self) -> i32 {
+        self.padding + self.header()
+    }
+
+    fn tab_span(&self, count: usize, width: u32) -> i32 {
+        (width / count.max(1) as u32).clamp(1, TAB_CELLS * self.fonts.metrics().width) as i32
+    }
+
+    #[must_use]
+    pub fn over_tabs(&self, y: f64) -> bool {
+        self.bar && (y as i32) < self.header()
+    }
+
+    #[must_use]
+    pub fn tab_at(&self, x: f64, count: usize, width: u32) -> Option<usize> {
+        Some(x.max(0.0) as usize / self.tab_span(count, width) as usize)
+            .filter(|&index| index < count)
     }
 
     #[must_use]
@@ -164,18 +227,25 @@ impl Scene {
     #[must_use]
     pub fn grid_size(&self, width: u32, height: u32) -> (usize, usize) {
         let metrics = self.fonts.metrics();
-        let cells = |pixels: u32, cell: u32| {
-            ((pixels as i32 - 2 * self.padding).max(0) as u32 / cell).max(1) as usize
+        let cells = |pixels: i32, cell: u32| {
+            ((pixels - 2 * self.padding).max(0) as u32 / cell).max(1) as usize
         };
-        (cells(height, metrics.height), cells(width, metrics.width))
+        (
+            cells(height as i32 - self.header(), metrics.height),
+            cells(width as i32, metrics.width),
+        )
     }
 
     #[must_use]
     pub fn cell_at(&self, x: f64, y: f64) -> (usize, usize) {
         let metrics = self.fonts.metrics();
-        let cell =
-            |pixels: f64, cell: u32| ((pixels as i32 - self.padding).max(0) as u32 / cell) as usize;
-        (cell(y, metrics.height), cell(x, metrics.width))
+        let cell = |pixels: f64, origin: i32, cell: u32| {
+            ((pixels as i32 - origin).max(0) as u32 / cell) as usize
+        };
+        (
+            cell(y, self.top(), metrics.height),
+            cell(x, self.padding, metrics.width),
+        )
     }
 
     fn forget_glyphs(&mut self) {
@@ -240,7 +310,7 @@ impl Scene {
     pub fn cell_origin(&self, line: usize, column: usize) -> (i32, i32) {
         (
             self.padding + column as i32 * self.fonts.metrics().width as i32,
-            self.padding + line as i32 * self.fonts.metrics().height as i32,
+            self.top() + line as i32 * self.fonts.metrics().height as i32,
         )
     }
 
@@ -278,13 +348,13 @@ impl Scene {
         if let Some(span) = overlay.selection {
             self.highlight(term, span, term.palette().foreground, SELECTION_ALPHA);
         }
-        if overlay.caret && overlay.banner.is_none() && overlay.preedit.is_empty() {
+        if overlay.caret && overlay.preedit.is_empty() {
             self.compose_cursor(gpu, term, overlay.focused);
         }
         if let Some(text) = overlay.banner {
             self.quads.push(solid(
                 self.padding,
-                self.padding + (term.lines() - 1) as i32 * self.fonts.metrics().height as i32,
+                self.top() + (term.lines() - 1) as i32 * self.fonts.metrics().height as i32,
                 term.cols() as i32 * self.fonts.metrics().width as i32,
                 self.fonts.metrics().height as i32,
                 term.palette().foreground,
@@ -296,7 +366,7 @@ impl Scene {
                 &Label {
                     line: term.lines() - 1,
                     column: 0,
-                    text,
+                    text: tail(text, term.cols()),
                     ink: term.palette().background,
                     paper: term.palette().foreground,
                     underlined: false,
@@ -316,6 +386,57 @@ impl Scene {
                 },
             );
         }
+        if self.bar {
+            self.compose_tabs(gpu, term.palette(), overlay);
+        }
+    }
+
+    fn compose_tabs(&mut self, gpu: &Gpu, palette: &Palette, overlay: &Overlay<'_>) {
+        let metrics = self.fonts.metrics();
+        let (width, stroke) = (metrics.width as i32, metrics.stroke as i32);
+        let header = self.header();
+        let span = self.tab_span(overlay.tabs.len(), overlay.width);
+        let strip = tint(palette.background, palette.foreground);
+        self.quads
+            .push(solid(0, 0, overlay.width as i32, header, strip, u8::MAX));
+        for (index, title) in overlay.tabs.iter().enumerate() {
+            let left = index as i32 * span;
+            let ink = if index == overlay.active {
+                self.quads
+                    .push(solid(left, 0, span, header, palette.background, u8::MAX));
+                palette.foreground
+            } else {
+                blend(palette.foreground, strip)
+            };
+            self.quads.push(solid(
+                left + span - stroke,
+                0,
+                stroke,
+                header,
+                palette.background,
+                u8::MAX,
+            ));
+            let mut pen = left + width;
+            for c in title.chars() {
+                let advance = c.width().unwrap_or(0) as i32 * width;
+                if pen + advance > left + span - width {
+                    break;
+                }
+                if advance > 0
+                    && let Some(glyph) = self.glyph(gpu, c, REGULAR)
+                    && glyph.size[0] > 0
+                {
+                    self.quads.push(textured(
+                        pen + centering(advance, glyph) + i32::from(glyph.left),
+                        (header - metrics.height as i32) / 2 + metrics.ascent
+                            - i32::from(glyph.top),
+                        glyph,
+                        ink,
+                    ));
+                }
+                pen += advance;
+            }
+        }
     }
 
     fn compose_rows(&mut self, gpu: &Gpu, term: &Term) -> bool {
@@ -327,7 +448,7 @@ impl Scene {
     fn compose_row(&mut self, gpu: &Gpu, term: &Term, line: usize) -> bool {
         let metrics = self.fonts.metrics();
         let (width, height) = (metrics.width as i32, metrics.height as i32);
-        let top = self.padding + line as i32 * height;
+        let top = self.top() + line as i32 * height;
         let reverse = term.modes().contains(Modes::REVERSE_VIDEO);
         let source = term.visible_row(line);
         let mut row = std::mem::take(&mut self.rows[line]);
@@ -457,7 +578,7 @@ impl Scene {
             if start < end {
                 self.quads.push(solid(
                     self.padding + start as i32 * width,
-                    self.padding + (line - first) as i32 * height,
+                    self.top() + (line - first) as i32 * height,
                     (end - start) as i32 * width,
                     height,
                     color,
@@ -491,7 +612,7 @@ impl Scene {
         let span = if cell.is_wide() { 2 * width } else { width };
         let (x, y) = (
             self.padding + column as i32 * width,
-            self.padding + cursor.line as i32 * height,
+            self.top() + cursor.line as i32 * height,
         );
         let color = term.palette().cursor;
         match (focused, cursor.shape) {
@@ -542,7 +663,7 @@ impl Scene {
     fn label(&mut self, gpu: &Gpu, term: &Term, label: &Label<'_>) {
         let metrics = self.fonts.metrics();
         let (width, height) = (metrics.width as i32, metrics.height as i32);
-        let top = self.padding + label.line as i32 * height;
+        let top = self.top() + label.line as i32 * height;
         let mut column = label.column;
         for c in label.text.chars() {
             let cells = c.width().unwrap_or(0);

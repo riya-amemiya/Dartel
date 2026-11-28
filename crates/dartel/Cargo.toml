@@ -5,6 +5,7 @@ version.workspace = true
 repository.workspace = true
 
 [dependencies]
+dartel-config.workspace = true
 dartel-pty.workspace = true
 dartel-render.workspace = true
 dartel-search.workspace = true
