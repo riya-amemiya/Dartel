@@ -211,7 +211,7 @@ fn erased_cells_take_the_current_background() {
     assert_eq!(
         style_at(&term, 0, 2),
         Style {
-            background: Color::Indexed(1),
+            background: Color::indexed(1),
             ..Style::default()
         }
     );
@@ -293,8 +293,8 @@ fn sgr_sets_attributes_and_indexed_colors() {
     assert!(style.attrs.contains(Attrs::BOLD));
     assert!(style.attrs.contains(Attrs::ITALIC));
     assert!(!style.attrs.contains(Attrs::UNDERLINE));
-    assert_eq!(style.foreground, Color::Indexed(1));
-    assert_eq!(style.background, Color::Indexed(4));
+    assert_eq!(style.foreground, Color::indexed(1));
+    assert_eq!(style.background, Color::indexed(4));
 }
 
 #[test]
@@ -302,37 +302,37 @@ fn sgr_reads_semicolon_and_colon_true_color() {
     let term = fed(1, 5, "\x1b[38;2;1;2;3mx\x1b[48:2::4:5:6my\x1b[58:2:7:8:9mz");
     assert_eq!(
         style_at(&term, 0, 0).foreground,
-        Color::Rgb(Rgb::new(1, 2, 3))
+        Color::rgb(Rgb::new(1, 2, 3))
     );
     assert_eq!(
         style_at(&term, 0, 1).background,
-        Color::Rgb(Rgb::new(4, 5, 6))
+        Color::rgb(Rgb::new(4, 5, 6))
     );
     assert_eq!(
         style_at(&term, 0, 2).underline,
-        Color::Rgb(Rgb::new(7, 8, 9))
+        Color::rgb(Rgb::new(7, 8, 9))
     );
 }
 
 #[test]
 fn sgr_reads_semicolon_and_colon_palette_colors() {
     let term = fed(1, 5, "\x1b[38;5;200mx\x1b[48:5:100my");
-    assert_eq!(style_at(&term, 0, 0).foreground, Color::Indexed(200));
-    assert_eq!(style_at(&term, 0, 1).background, Color::Indexed(100));
+    assert_eq!(style_at(&term, 0, 0).foreground, Color::indexed(200));
+    assert_eq!(style_at(&term, 0, 1).background, Color::indexed(100));
 }
 
 #[test]
 fn sgr_continues_after_an_extended_color() {
     let term = fed(1, 5, "\x1b[38;5;9;1mx");
-    assert_eq!(style_at(&term, 0, 0).foreground, Color::Indexed(9));
+    assert_eq!(style_at(&term, 0, 0).foreground, Color::indexed(9));
     assert!(style_at(&term, 0, 0).attrs.contains(Attrs::BOLD));
 }
 
 #[test]
 fn sgr_bright_colors_map_to_the_upper_palette() {
     let term = fed(1, 5, "\x1b[91;102mx");
-    assert_eq!(style_at(&term, 0, 0).foreground, Color::Indexed(9));
-    assert_eq!(style_at(&term, 0, 0).background, Color::Indexed(10));
+    assert_eq!(style_at(&term, 0, 0).foreground, Color::indexed(9));
+    assert_eq!(style_at(&term, 0, 0).background, Color::indexed(10));
 }
 
 #[test]
@@ -380,7 +380,7 @@ fn style_table_survives_more_styles_than_it_can_index() {
     }
     assert_eq!(
         style_at(&term, 0, 0).foreground,
-        Color::Rgb(Rgb::new(1, 17, 111))
+        Color::rgb(Rgb::new(1, 17, 111))
     );
 }
 
@@ -516,7 +516,7 @@ fn legacy_alternate_screen_modes_switch_without_saving_the_cursor() {
 fn save_and_restore_cursor_round_trip_position_and_pen() {
     let term = fed(3, 10, "\x1b[2;3H\x1b[31m\x1b7\x1b[H\x1b[0m\x1b8x");
     assert_eq!(screen(&term), ["", "  x", ""]);
-    assert_eq!(style_at(&term, 1, 2).foreground, Color::Indexed(1));
+    assert_eq!(style_at(&term, 1, 2).foreground, Color::indexed(1));
 }
 
 #[test]
@@ -725,14 +725,14 @@ fn default_palette_follows_the_xterm_cube_and_gray_ramp() {
 fn palette_resolves_default_indexed_and_direct_colors() {
     let term = term(1, 5);
     let fallback = Rgb::new(9, 9, 9);
-    assert_eq!(term.palette().resolve(Color::Default, fallback), fallback);
+    assert_eq!(term.palette().resolve(Color::DEFAULT, fallback), fallback);
     assert_eq!(
-        term.palette().resolve(Color::Indexed(231), fallback),
+        term.palette().resolve(Color::indexed(231), fallback),
         Rgb::new(255, 255, 255)
     );
     assert_eq!(
         term.palette()
-            .resolve(Color::Rgb(Rgb::new(1, 2, 3)), fallback),
+            .resolve(Color::rgb(Rgb::new(1, 2, 3)), fallback),
         Rgb::new(1, 2, 3)
     );
 }

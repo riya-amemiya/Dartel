@@ -45,24 +45,31 @@ fn scaled(part: &str) -> Option<u8> {
         .map(|value| (value * 255 / ((1 << (4 * part.len())) - 1)) as u8)
 }
 
+const KIND: u32 = 24;
+const INDEXED: u32 = 1;
+const DIRECT: u32 = 2;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Color {
-    #[default]
-    Default,
-    Indexed(u8),
-    Rgb(Rgb),
-}
+pub struct Color(u32);
 
 impl Color {
+    pub const DEFAULT: Color = Color(0);
+
     #[inline]
-    pub(super) fn pack(self) -> u32 {
-        match self {
-            Color::Default => 0,
-            Color::Indexed(index) => 1 << 24 | u32::from(index),
-            Color::Rgb(rgb) => {
-                2 << 24 | u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b)
-            }
-        }
+    #[must_use]
+    pub fn indexed(index: u8) -> Color {
+        Color(INDEXED << KIND | u32::from(index))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn rgb(rgb: Rgb) -> Color {
+        Color(DIRECT << KIND | u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b))
+    }
+
+    #[inline]
+    pub(super) fn bits(self) -> u32 {
+        self.0
     }
 }
 
@@ -149,10 +156,10 @@ impl Palette {
     #[inline]
     #[must_use]
     pub fn resolve(&self, color: Color, fallback: Rgb) -> Rgb {
-        match color {
-            Color::Default => fallback,
-            Color::Indexed(index) => self.indexed(index),
-            Color::Rgb(rgb) => rgb,
+        match color.0 >> KIND {
+            INDEXED => self.indexed(color.0 as u8),
+            DIRECT => Rgb::new((color.0 >> 16) as u8, (color.0 >> 8) as u8, color.0 as u8),
+            _ => fallback,
         }
     }
 }
