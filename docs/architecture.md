@@ -172,24 +172,32 @@ flowchart LR
   table is checked against the shortcuts of all actions, so two actions can
   swap shortcuts in one file. A clash is reported at the later entry with the
   names of both actions.
+- `Config::font_fallback` holds the names of `font.fallback` in file order, at
+  most 16 names of 1 to 255 bytes each, so the count and each length fit in
+  one byte of the state file.
 - `Config::encode` writes a magic that includes a format number, the fixed
-  width fields in little-endian order, two bytes for each action, and the font
-  family. The two bytes are the modifier bits and the key, which is the ASCII
-  byte of a character or `0x80` plus the index of a named key, and two zero
-  bytes mean no shortcut. `Config::decode` returns `None` for another magic, a
-  short input, a value outside its range, a byte that names no key, or two
-  actions with one shortcut, and start-up then uses the defaults.
+  width fields in little-endian order, two bytes for each action, the fallback
+  fonts, and the font family. The two bytes are the modifier bits and the key,
+  which is the ASCII byte of a character or `0x80` plus the index of a named
+  key, and two zero bytes mean no shortcut. The fallback fonts are one byte for
+  the count, then a length byte and the UTF-8 bytes of each name. The font
+  family takes the rest of the file. `Config::decode` returns `None` for
+  another magic, a short input, a value outside its range, a byte that names
+  no key, two actions with one shortcut, more than 16 fallback fonts, an empty
+  fallback name, or a name that is not UTF-8, and start-up then uses the
+  defaults.
 - `Locations::resolve` places the TOML file under `XDG_CONFIG_HOME` and the
   state file under `XDG_STATE_HOME`, with `~/.config` and `~/.local/state` as
   fallbacks on both platforms.
 - `save` and `load` are the only writers. The `dartel config save` and
   `dartel config load` subcommands and the two prompts in the window call the
   same functions.
-- A load in the window rebuilds the `Scene` for the font and the padding, sets
-  the palette of every `Term` through `Term::set_palette`, and resizes every
-  session. It replaces `View::config`, and the next key event reads the new
-  shortcuts from it. The scrollback limit applies to tabs opened after the
-  load, and the window size in cells applies at the next start.
+- A load in the window rebuilds the `Scene` for the font, the fallback fonts,
+  and the padding, sets the palette of every `Term` through
+  `Term::set_palette`, and resizes every session. It replaces `View::config`,
+  and the next key event reads the new shortcuts from it. The scrollback limit
+  applies to tabs opened after the load, and the window size in cells applies
+  at the next start.
 
 ## Parsing
 
@@ -617,6 +625,15 @@ flowchart TD
   character on first use. The family is the one in the settings when it is
   installed, and the platform list otherwise. Color glyphs are stored
   premultiplied.
+- `Fonts::new` takes the names of `font.fallback` and keeps the face ids of
+  the installed ones in `Fonts::preferred`, so a name that is not installed is
+  dropped once. `Fonts::discover` runs only for a character that is missing
+  from the face of its style and from the regular face and that
+  `Fonts::fallbacks` has not seen. It tries the preferred faces in order, then
+  `FALLBACKS`, the monospaced faces, and every face, and caches the result for
+  the character. A cached glyph never reaches this lookup. A load in the
+  window builds a new `Scene`, whose empty glyph cache and stale lines draw
+  the text on the screen and later text with the new fallback fonts.
 - The fragment shader reads the bound texture with `textureLoad`, so no
   sampler is bound. The surface uses a non-sRGB format and premultiplied alpha
   blending.
