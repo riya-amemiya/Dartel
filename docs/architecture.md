@@ -308,11 +308,14 @@ classDiagram
 - `Term` owns two grids, one for the primary screen and one for the alternate
   screen. `grid` is whichever is active and `inactive` is the other, and
   switching screens swaps them. The alternate grid keeps no scrollback.
-- `StyleTable` interns each distinct `Style`. The key packs the three colors,
-  the attributes, and the link id into a `u128`. A `StyleId` is a `u16`, and
-  when the table is full, `Term` rebuilds it from the styles that cells still
-  reference. A direct-mapped array of 16 recent keys answers a repeated lookup
-  before the hash map.
+- A `Color` is one `u32`. The top byte tells the default color, a palette
+  index, and a direct color apart, and the low bytes hold the index or the
+  three channels.
+- `StyleTable` interns each distinct `Style`. The key joins the three colors,
+  the attributes, and the link id into a `u128` without converting them. A
+  `StyleId` is a `u16`, and when the table is full, `Term` rebuilds it from
+  the styles that cells still reference. A direct-mapped array of 16 recent
+  keys answers a repeated lookup before the hash map.
 - `Pen` defers interning. SGR sequences only change `pen.style` and mark the
   pen as stale, and the style is interned when the next character is written.
 - `Damage` marks the lines a frame has to rebuild. Scrolling the view or

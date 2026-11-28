@@ -125,7 +125,7 @@ fn look(style: Style, palette: &Palette, reverse: bool) -> Look {
     }
     Look {
         foreground: ink,
-        background: (inverse || style.background != Color::Default).then_some(paper),
+        background: (inverse || style.background != Color::DEFAULT).then_some(paper),
         underline: palette.resolve(style.underline, ink),
         attrs,
         face: usize::from(style.attrs.contains(Attrs::BOLD))

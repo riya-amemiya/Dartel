@@ -9,16 +9,16 @@ fn channel(value: u16) -> u8 {
 fn extended(group: &[u16], rest: &mut ParamsIter<'_>) -> Option<Color> {
     match *group {
         [_] => match rest.next()?[0] {
-            5 => Some(Color::Indexed(channel(rest.next()?[0]))),
-            2 => Some(Color::Rgb(Rgb::new(
+            5 => Some(Color::indexed(channel(rest.next()?[0]))),
+            2 => Some(Color::rgb(Rgb::new(
                 channel(rest.next()?[0]),
                 channel(rest.next()?[0]),
                 channel(rest.next()?[0]),
             ))),
             _ => None,
         },
-        [_, 5, index, ..] => Some(Color::Indexed(channel(index))),
-        [_, 2, red, green, blue] | [_, 2, _, red, green, blue, ..] => Some(Color::Rgb(Rgb::new(
+        [_, 5, index, ..] => Some(Color::indexed(channel(index))),
+        [_, 2, red, green, blue] | [_, 2, _, red, green, blue, ..] => Some(Color::rgb(Rgb::new(
             channel(red),
             channel(green),
             channel(blue),
@@ -74,29 +74,29 @@ impl Term {
                 27 => self.pen.style.attrs.set(Attrs::INVERSE, false),
                 28 => self.pen.style.attrs.set(Attrs::HIDDEN, false),
                 29 => self.pen.style.attrs.set(Attrs::STRIKETHROUGH, false),
-                code @ 30..=37 => self.pen.style.foreground = Color::Indexed((code - 30) as u8),
+                code @ 30..=37 => self.pen.style.foreground = Color::indexed((code - 30) as u8),
                 38 => {
                     if let Some(color) = extended(group, &mut groups) {
                         self.pen.style.foreground = color;
                     }
                 }
-                39 => self.pen.style.foreground = Color::Default,
-                code @ 40..=47 => self.pen.style.background = Color::Indexed((code - 40) as u8),
+                39 => self.pen.style.foreground = Color::DEFAULT,
+                code @ 40..=47 => self.pen.style.background = Color::indexed((code - 40) as u8),
                 48 => {
                     if let Some(color) = extended(group, &mut groups) {
                         self.pen.style.background = color;
                     }
                 }
-                49 => self.pen.style.background = Color::Default,
+                49 => self.pen.style.background = Color::DEFAULT,
                 58 => {
                     if let Some(color) = extended(group, &mut groups) {
                         self.pen.style.underline = color;
                     }
                 }
-                59 => self.pen.style.underline = Color::Default,
-                code @ 90..=97 => self.pen.style.foreground = Color::Indexed((code - 90 + 8) as u8),
+                59 => self.pen.style.underline = Color::DEFAULT,
+                code @ 90..=97 => self.pen.style.foreground = Color::indexed((code - 90 + 8) as u8),
                 code @ 100..=107 => {
-                    self.pen.style.background = Color::Indexed((code - 100 + 8) as u8);
+                    self.pen.style.background = Color::indexed((code - 100 + 8) as u8);
                 }
                 _ => {}
             }
