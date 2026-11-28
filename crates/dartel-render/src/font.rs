@@ -4,8 +4,11 @@ use std::sync::Arc;
 use fontdb::{Database, Family, ID, Query, Stretch, Style, Weight};
 use swash::scale::image::Content;
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
+use swash::shape::ShapeContext;
+use swash::text::cluster::{CharCluster, Parser, Token};
+use swash::text::{Codepoint, Script};
 use swash::zeno::Format;
-use swash::{CacheKey, FontRef};
+use swash::{CacheKey, FontRef, Tag, tag_from_bytes};
 
 #[cfg(target_os = "macos")]
 const FAMILIES: &[Family<'static>] = &[
@@ -32,6 +35,13 @@ const FALLBACKS: &[&str] = &[
 ];
 
 pub const REGULAR: usize = 0;
+const SCRIPTS: [Tag; 2] = [tag_from_bytes(b"DFLT"), tag_from_bytes(b"latn")];
+const LIGATING: [Tag; 3] = [
+    tag_from_bytes(b"calt"),
+    tag_from_bytes(b"liga"),
+    tag_from_bytes(b"clig"),
+];
+const SHAPES: usize = 4096;
 
 struct Face {
     id: ID,
@@ -70,6 +80,13 @@ pub struct Raster {
     pub pixels: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ligature {
+    pub start: usize,
+    pub cells: usize,
+    pub glyph: u16,
+}
+
 pub struct Library(Database);
 
 impl Library {
@@ -88,8 +105,18 @@ pub struct Fonts {
     preferred: Vec<ID>,
     fallbacks: HashMap<char, Option<usize>>,
     context: ScaleContext,
+    shaper: ShapeContext,
+    shapes: [HashMap<String, Box<[Ligature]>>; 4],
+    ligatures: bool,
     size: f32,
     metrics: Metrics,
+}
+
+fn ligates(font: FontRef<'_>) -> bool {
+    font.writing_systems()
+        .filter(|system| SCRIPTS.contains(&system.script_tag()))
+        .flat_map(|system| system.features())
+        .any(|feature| LIGATING.contains(&feature.tag()))
 }
 
 fn premultiplied(mut pixels: Vec<u8>) -> Vec<u8> {
@@ -159,6 +186,9 @@ impl Fonts {
             preferred,
             fallbacks: HashMap::new(),
             context: ScaleContext::new(),
+            shaper: ShapeContext::new(),
+            shapes: Default::default(),
+            ligatures: false,
             size,
             metrics: Metrics {
                 width: 1,
@@ -176,11 +206,16 @@ impl Fonts {
             fonts.load(ids[3])?,
         ];
         fonts.metrics = fonts.measure();
+        fonts.ligatures = ligates(fonts.faces[fonts.styles[REGULAR]].font());
         Some(fonts)
     }
 
     pub fn metrics(&self) -> Metrics {
         self.metrics
+    }
+
+    pub fn ligatures(&self) -> bool {
+        self.ligatures
     }
 
     pub fn set_size(&mut self, size: f32) {
@@ -270,8 +305,63 @@ impl Fonts {
         self.load(id)
     }
 
+    pub fn shape(&mut self, text: &str, style: usize) -> &[Ligature] {
+        if !self.shapes[style].contains_key(text) {
+            let found = self.substitute(text, style);
+            if self.shapes[style].len() >= SHAPES {
+                self.shapes[style].clear();
+            }
+            self.shapes[style].insert(text.to_owned(), found);
+        }
+        &self.shapes[style][text]
+    }
+
+    fn substitute(&mut self, text: &str, style: usize) -> Box<[Ligature]> {
+        let font = self.faces[self.styles[style]].font();
+        let charmap = font.charmap();
+        let nominal: Vec<u16> = text.chars().map(|c| charmap.map(c)).collect();
+        let mut shaper = self.shaper.builder(font).script(Script::Latin).build();
+        let mut cluster = CharCluster::new();
+        let mut parser = Parser::new(
+            Script::Latin,
+            text.chars().enumerate().map(|(index, ch)| Token {
+                ch,
+                offset: index as u32,
+                len: 1,
+                info: ch.properties().into(),
+                data: 0,
+            }),
+        );
+        while parser.next(&mut cluster) {
+            cluster.map(|c| charmap.map(c));
+            shaper.add_cluster(&cluster);
+        }
+        let mut found = Vec::new();
+        shaper.shape_with(|cluster| {
+            let range = cluster.source.to_range();
+            if let Some(glyph) = cluster.glyphs.first()
+                && (range.len() > 1 || nominal.get(range.start) != Some(&glyph.id))
+            {
+                found.push(Ligature {
+                    start: range.start,
+                    cells: range.len(),
+                    glyph: glyph.id,
+                });
+            }
+        });
+        found.into()
+    }
+
     pub fn rasterize(&mut self, c: char, style: usize) -> Option<Raster> {
         let (index, glyph) = self.resolve(c, style)?;
+        self.render(index, glyph)
+    }
+
+    pub fn rasterize_glyph(&mut self, glyph: u16, style: usize) -> Option<Raster> {
+        self.render(self.styles[style], glyph)
+    }
+
+    fn render(&mut self, index: usize, glyph: u16) -> Option<Raster> {
         let font = self.faces[index].font();
         let advance = font
             .glyph_metrics(&[])

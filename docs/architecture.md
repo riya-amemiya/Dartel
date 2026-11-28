@@ -40,7 +40,7 @@ flowchart TD
 | `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `graphics`, `keys`, `modes`, `charset` | Screen, scrollback, styles, modes, images, the kitty keyboard encoding, and the `Perform` implementation |
 | `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
-| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, font discovery and rasterization, the wgpu surface, the picture textures, and the draw calls |
+| `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, ligatures, font discovery, shaping, and rasterization, the wgpu surface, the picture textures, and the draw calls |
 | `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, windows, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
 
 ## Threads and data flow
@@ -671,8 +671,11 @@ flowchart TD
     cached -- no --> drawn{"Box drawing, block element, or Powerline arrow"}
     drawn -- yes --> mask["Draw a mask of one cell and keep it for the atlas"]
     drawn -- no --> raster["Rasterize with swash and keep it for the atlas"]
-    mask --> frame
-    raster --> frame
+    mask --> ligatures{"Font with ligatures"}
+    raster --> ligatures
+    ligatures -- yes --> shape["Shape the runs of those lines and swap in the ligature glyphs"]
+    ligatures -- no --> frame
+    shape --> frame
     frame --> upload["Upload the kept glyphs to the atlas"]
     upload --> buffer["Write the instance buffer"]
     buffer --> draw["One instanced draw call per layer"]
@@ -770,6 +773,29 @@ flowchart TD
   `Library` and keeps it, so the caller chooses the thread of the scan. Each
   `Scene` has a `Library` of its own, because loading a face changes its entry
   in the list.
+- `Fonts::new` reads the writing systems of the regular face once and sets
+  `Fonts::ligatures` when the default or Latin script has the `calt`, `liga`,
+  or `clig` feature. Without it, `Scene::compose` does no ligature work, and
+  `Scene::compose_row` is the same code for every font.
+- With ligatures, `Scene::ligate_rows` runs after `Scene::compose_rows` over
+  the same rebuilt lines. `Scene::ligate` splits the cells of a line into
+  runs of at least two cells of one style, and a run ends at a default cell, a
+  wide character, its spacer, a cell with combining marks, and a character
+  that `Scene` draws itself. `Fonts::shape` shapes each run with swash and
+  keeps a `Ligature` for every cluster whose first glyph differs from the
+  glyph of its character, or that covers more than one character. The result
+  is cached per face in a `HashMap` keyed by the text of the run, which is
+  cleared when it reaches 4096 entries.
+- `Scene::join_glyphs` edits the glyph quads that `Scene::compose_row` built.
+  For each cell of a ligature it rebuilds the quad of the cell's own glyph,
+  finds it after the previous edit, and replaces it with the ligature glyph
+  on the first cell or removes it on the others. A ligature glyph is placed
+  like a character glyph across the cells of the ligature, so the columns
+  around it do not move, and a glyph that reaches into the previous cell draws
+  there. Ligature glyphs are cached in a `HashMap` keyed by glyph id and face,
+  go through `Scene::place` and `Scene::flush` like other glyphs, and are
+  dropped with the glyph cache. The cursor, selection, and search read the
+  cells and ignore ligatures.
 - `font::Fonts` loads four faces of one family and finds a fallback face per
   character on first use. The family is the one in the settings when it is
   installed, and the platform list otherwise. Color glyphs are stored

@@ -16,6 +16,7 @@ Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With 
 - Lines rewrap when the window width changes
 - True color and 256 colors, bold, dim, italic, straight, double, curly, dotted, and dashed underlines, strikethrough, and inverse
 - Wide characters, combining marks, and emoji through font fallback
+- Programming ligatures such as `->` and `!=` when the font has them, each covering the cells of its characters
 - Box drawing characters, block elements, and the Powerline arrows drawn by Dartel to fill the cell, so lines join without gaps between cells and rows
 - Images through Sixel and the kitty graphics protocol
 - The kitty keyboard protocol
@@ -258,6 +259,8 @@ page-down = "shift+pagedown"
 | `keys.*` | A shortcut as described in [Shortcuts](#shortcuts), or `""` for none | The values above on macOS, with `ctrl+shift` in place of `cmd` on Linux |
 
 When the font family is not installed, Dartel uses the first available of Menlo and Monaco on macOS or DejaVu Sans Mono and Liberation Mono on Linux.
+
+When the regular face of the font family has the `calt`, `liga`, or `clig` feature for the default or Latin script, Dartel shapes text with it and draws the ligatures that the font produces. A ligature takes the cells of the characters it replaces, so the columns of the text around it stay where they are. Only characters of one style in one row join, and a wide character, a character with a combining mark, a box drawing character, a block element, or a Powerline arrow ends the sequence. Selection, search, copy, and the cursor keep working on the cells. There is no setting for this.
 
 A character that the font family does not have is drawn from the first font in `font.fallback` that has it, in the order of the array, such as `fallback = ["IPAGothic", "Noto Sans CJK JP"]`. A name that is not installed is skipped. When none of them has the character, Dartel looks in Hiragino Sans, Apple Color Emoji, and Apple Symbols on macOS, or in Noto Sans Mono CJK JP, Noto Sans CJK JP, IPAGothic, Noto Color Emoji, and DejaVu Sans Mono on Linux, then in the installed monospaced fonts, and then in every installed font.
 
