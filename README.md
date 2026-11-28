@@ -132,7 +132,7 @@ Dartel draws images sent with Sixel or with the kitty graphics protocol. An imag
 
 An application can read the cell size from the pixel fields of the window size, from `CSI 14 t`, and from `CSI 16 t`. The answer to the primary device attributes request lists Sixel.
 
-An image is at most 4096 pixels on each side. Each tab keeps up to 256 MiB of images sent for later display and up to 256 MiB of displayed images, and drops the oldest ones beyond that.
+An image is at most 4096 pixels on each side. Each tab keeps up to 256 MiB of images sent for later display, animation frames included, and up to 256 MiB of displayed images, and drops the oldest ones beyond that.
 
 ### Sixel
 
@@ -145,14 +145,23 @@ An image is at most 4096 pixels on each side. Each tab keeps up to 256 MiB of im
 
 ### kitty graphics protocol
 
-- The actions are transmit (`a=t`), transmit and display (`a=T`), display (`a=p`), delete (`a=d`), and query (`a=q`).
+- The actions are transmit (`a=t`), transmit and display (`a=T`), display (`a=p`), delete (`a=d`), query (`a=q`), animation frame (`a=f`), animation control (`a=a`), and frame composition (`a=c`).
 - The formats are RGB (`f=24`), RGBA (`f=32`), and PNG (`f=100`), each with optional zlib compression (`o=z`) and split into chunks with `m`.
 - Image ids (`i`), image numbers (`I`), placement ids (`p`), and replies with the quiet levels of `q`.
 - A placement takes a source rectangle (`x`, `y`, `w`, `h`), an offset inside the first cell (`X`, `Y`), a size in cells (`c`, `r`), and the cursor policy (`C`).
-- Delete takes the targets `a`, `c`, `i`, `n`, `p`, `q`, `r`, `x`, `y`, and `z`, and the uppercase forms also free the image data.
-- Data is read from the escape code only (`t=d`). Transmission through a file, a temporary file, or shared memory is not supported, and neither are animation (`a=f`, `a=a`, `a=c`), Unicode placeholders (`U=1`), relative placements (`P`), and the indexed formats (`f=8`, `f=16`). Such a command gets an error reply when it names an image.
+- Delete takes the targets `a`, `c`, `f`, `i`, `n`, `p`, `q`, `r`, `x`, `y`, and `z`, and the uppercase forms also free the image data. `f` and `F` remove every frame of the image named by `i` or `I` except the root frame.
+- Data is read from the escape code only (`t=d`). Transmission through a file, a temporary file, or shared memory is not supported, and neither are Unicode placeholders (`U=1`), relative placements (`P`), the indexed formats (`f=8`, `f=16`), and feature queries (`e`). Such a command gets an error reply when it names an image.
 - Every image is drawn above the text. `z` does not order images, and only the delete targets read it.
 - Text written over an image leaves it in place, and so do the erase commands other than `CSI 2 J`.
+
+### kitty animation
+
+- `a=f` adds a frame to the image named by `i` or `I`. The data is drawn at `x`, `y` onto a canvas that is the frame `c`, or the color `Y` in 32-bit RGBA, transparent black by default. `r` edits that frame instead of adding one. `X=1` replaces the canvas pixels, and the default is alpha blending. `z` is the gap in milliseconds, 40 for a new frame by default, and a negative gap makes a frame that is skipped.
+- `a=a` stops the animation with `s=1`, runs it with `s=3`, and runs it until the last frame and waits there for more frames with `s=2`. `v=1` loops forever, which is the default, and a larger `v` plays the frames `v - 1` times and stops on the last frame. Stopping resets the loop count. `c` makes a frame the current one, and `r` with `z` sets the gap of a frame.
+- `a=c` copies the rectangle of size `w` by `h` at `X`, `Y` in frame `r` onto `x`, `y` in frame `c`, blending by default and replacing with `C=1`. A missing image or frame gets `ENOENT`, and a rectangle outside the image or two overlapping rectangles in one frame get `EINVAL`.
+- A new animation is stopped. The root frame has no gap until `a=a` gives it one, so a running animation skips it.
+- A frame number past the last frame gets `ENOENT`, and frame data outside the image gets `EINVAL`. A frame that would make the frames of one image larger than 256 MiB gets `ENOSPC`.
+- An animation plays only while one of its placements is on the screen of the active tab, and it waits where it is while it is out of view.
 
 ## Settings
 

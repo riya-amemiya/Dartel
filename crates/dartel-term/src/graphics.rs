@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::ops::Range;
 use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use dartel_image::{Image, MAX_SIDE, base64, inflate, png, sixel};
 
@@ -12,6 +13,9 @@ const MAX_UPLOAD: usize = MAX_SIDE as usize * MAX_SIDE as usize * 4;
 const MAX_INFLATED: usize = 64 << 20;
 const MAX_SIXEL: usize = 32 << 20;
 const DEFAULT_CELL: [u16; 2] = [8, 16];
+const DEFAULT_GAP: i64 = 40;
+const MISSING_IMAGE: &str = "ENOENT:no image with this id";
+const MISSING_FRAME: &str = "ENOENT:no frame with this number";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Picture {
@@ -144,11 +148,153 @@ struct Spot {
 }
 
 #[derive(Clone, Debug)]
+struct Showing {
+    picture: Weak<Picture>,
+    source: [u32; 4],
+    inner: [u32; 2],
+    area: [u32; 2],
+}
+
+impl Showing {
+    fn render(&self, image: &Image) -> Vec<u8> {
+        let scaled = image.premultiplied(self.source, self.inner[0], self.inner[1]);
+        if self.area == self.inner {
+            scaled
+        } else {
+            framed(&scaled, self.inner, self.area)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Play {
+    Stopped,
+    Loading,
+    Running,
+}
+
+#[derive(Clone, Debug)]
+struct Frame {
+    image: Arc<Image>,
+    gap: i64,
+}
+
+#[derive(Clone, Debug)]
+struct Animation {
+    frames: Vec<Frame>,
+    root_gap: i64,
+    current: usize,
+    play: Play,
+    loops: u32,
+    played: u32,
+    shown: Option<Instant>,
+    stale: bool,
+}
+
+impl Animation {
+    fn new() -> Animation {
+        Animation {
+            frames: Vec::new(),
+            root_gap: 0,
+            current: 0,
+            play: Play::Stopped,
+            loops: 1,
+            played: 0,
+            shown: None,
+            stale: false,
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.frames.len() + 1
+    }
+
+    fn bytes(&self) -> usize {
+        self.frames
+            .iter()
+            .map(|frame| frame.image.pixels.len())
+            .sum()
+    }
+
+    fn gap(&self, index: usize) -> Duration {
+        let gap = index
+            .checked_sub(1)
+            .map_or(self.root_gap, |extra| self.frames[extra].gap);
+        Duration::from_millis(u64::try_from(gap).unwrap_or(0))
+    }
+
+    fn set_gap(&mut self, index: usize, gap: i64) {
+        match index.checked_sub(1) {
+            None => self.root_gap = gap,
+            Some(extra) => self.frames[extra].gap = gap,
+        }
+    }
+
+    fn next(&self) -> Option<usize> {
+        if self.current + 1 < self.count() {
+            return Some(self.current + 1);
+        }
+        (self.play == Play::Running
+            && self.count() > 1
+            && (self.loops == 1 || self.played + 2 < self.loops))
+            .then_some(0)
+    }
+
+    fn start(&mut self, play: Play) {
+        if self.play == Play::Stopped {
+            self.shown = None;
+        }
+        self.play = play;
+    }
+
+    fn stop(&mut self) {
+        self.play = Play::Stopped;
+        self.played = 0;
+        self.shown = None;
+    }
+
+    fn advance(&mut self, now: Instant) -> (bool, Option<Instant>) {
+        if self.play == Play::Stopped {
+            return (false, None);
+        }
+        let mut shown = self.shown.unwrap_or(now);
+        let mut moved = false;
+        for _ in 0..self.count() {
+            let due = shown + self.gap(self.current);
+            if due > now {
+                break;
+            }
+            let Some(next) = self.next() else {
+                if self.play == Play::Running {
+                    self.stop();
+                }
+                break;
+            };
+            self.played += u32::from(next == 0);
+            self.current = next;
+            shown = if now - due < self.gap(next) { due } else { now };
+            moved = true;
+        }
+        if self.play == Play::Stopped {
+            return (moved, None);
+        }
+        self.shown = Some(shown);
+        let gap = self.gap(self.current);
+        (
+            moved,
+            (!gap.is_zero() && self.next().is_some()).then(|| shown + gap),
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct Graphics {
     cell: [u16; 2],
     images: HashMap<u32, Arc<Image>>,
     order: VecDeque<u32>,
     numbers: HashMap<u32, u32>,
+    animations: HashMap<u32, Animation>,
+    showings: HashMap<u32, Vec<Showing>>,
     upload: Option<(Command, Option<Vec<u8>>)>,
     sixel: Option<(bool, Vec<u8>)>,
     placed: Vec<Weak<Picture>>,
@@ -169,6 +315,8 @@ impl Graphics {
             images: HashMap::new(),
             order: VecDeque::new(),
             numbers: HashMap::new(),
+            animations: HashMap::new(),
+            showings: HashMap::new(),
             upload: None,
             sixel: None,
             placed: Vec::new(),
@@ -200,13 +348,48 @@ impl Graphics {
                 .images
                 .values()
                 .map(|image| image.pixels.len())
+                .chain(self.animations.values().map(Animation::bytes))
                 .sum::<usize>()
                 > quota
         {
             for oldest in self.order.drain(..1) {
                 self.images.remove(&oldest);
+                self.animations.remove(&oldest);
+                self.showings.remove(&oldest);
                 self.numbers.retain(|_, held| *held != oldest);
             }
+        }
+    }
+
+    fn frame(&self, id: u32, index: usize) -> Option<Arc<Image>> {
+        match index.checked_sub(1) {
+            None => self.images.get(&id).cloned(),
+            Some(extra) => self
+                .animations
+                .get(&id)?
+                .frames
+                .get(extra)
+                .map(|frame| Arc::clone(&frame.image)),
+        }
+    }
+
+    fn current(&self, id: u32) -> Option<Arc<Image>> {
+        self.frame(
+            id,
+            self.animations
+                .get(&id)
+                .map_or(0, |animation| animation.current),
+        )
+    }
+
+    fn replace(&mut self, id: u32, index: usize, image: Image) {
+        let animation = self.animations.entry(id).or_insert_with(Animation::new);
+        animation.stale |= animation.current == index;
+        match index.checked_sub(1) {
+            None => {
+                self.images.insert(id, Arc::new(image));
+            }
+            Some(extra) => animation.frames[extra].image = Arc::new(image),
         }
     }
 
@@ -272,6 +455,81 @@ fn append(buffer: &mut Vec<u8>, bytes: &[u8], limit: usize) {
     buffer.extend_from_slice(&bytes[..bytes.len().min(limit.saturating_sub(buffer.len()))]);
 }
 
+fn blend(below: &mut [u8], above: &[u8]) {
+    for (to, from) in below
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(above.as_chunks::<4>().0)
+    {
+        let (over, under) = (
+            u32::from(from[3]),
+            u32::from(to[3]) * (255 - u32::from(from[3])),
+        );
+        let alpha = over * 255 + under;
+        if alpha == 0 {
+            *to = [0; 4];
+            continue;
+        }
+        let [red, green, blue] = [0, 1, 2].map(|channel| {
+            ((u32::from(from[channel]) * over * 255 + u32::from(to[channel]) * under) / alpha) as u8
+        });
+        *to = [red, green, blue, ((alpha + 127) / 255) as u8];
+    }
+}
+
+fn paint(
+    canvas: &mut [u8],
+    width: u32,
+    source: &Image,
+    from: [u32; 2],
+    to: [u32; 2],
+    size: [u32; 2],
+    overwrite: bool,
+) {
+    let span = size[0] as usize * 4;
+    for line in 0..size[1] as usize {
+        let start = ((from[1] as usize + line) * source.width as usize + from[0] as usize) * 4;
+        let end = ((to[1] as usize + line) * width as usize + to[0] as usize) * 4;
+        let (above, below) = (
+            &source.pixels[start..start + span],
+            &mut canvas[end..end + span],
+        );
+        if overwrite {
+            below.copy_from_slice(above);
+        } else {
+            blend(below, above);
+        }
+    }
+}
+
+fn fits(at: [u32; 2], size: [u32; 2], image: &Image) -> bool {
+    u64::from(at[0]) + u64::from(size[0]) <= u64::from(image.width)
+        && u64::from(at[1]) + u64::from(size[1]) <= u64::from(image.height)
+}
+
+fn gap(command: &Command) -> Option<i64> {
+    (command.depth != 0).then(|| command.depth.clamp(i32::MIN.into(), i32::MAX.into()))
+}
+
+fn swap(row: &mut Row, id: u32, swaps: &[(Arc<Picture>, Arc<Picture>)]) -> bool {
+    row.tiles_mut()
+        .iter_mut()
+        .filter(|tile| tile.image == id)
+        .fold(false, |hit, tile| {
+            match swaps
+                .iter()
+                .find(|(old, _)| Arc::ptr_eq(old, &tile.picture))
+            {
+                Some((_, new)) => {
+                    tile.picture = Arc::clone(new);
+                    true
+                }
+                None => hit,
+            }
+        })
+}
+
 impl Term {
     pub fn set_cell_size(&mut self, width: u16, height: u16) {
         self.graphics.cell = [width.max(1), height.max(1)];
@@ -332,7 +590,7 @@ impl Term {
             if command.more {
                 self.graphics.upload = Some((first, buffer));
             } else {
-                self.transmit(
+                self.receive(
                     &Command {
                         quiet: first.quiet.max(command.quiet),
                         ..first
@@ -351,13 +609,288 @@ impl Term {
             return;
         }
         match command.action {
-            b't' | b'T' | b'q' if command.more => {
+            b't' | b'T' | b'q' | b'f' if command.more => {
                 self.graphics.upload = Some((command, base64::decode(data)));
             }
-            b't' | b'T' | b'q' => self.transmit(&command, base64::decode(data)),
+            b't' | b'T' | b'q' | b'f' => self.receive(&command, base64::decode(data)),
             b'p' => self.put(&command),
             b'd' => self.delete(&command),
+            b'a' | b'c' => {
+                let id = self.target(&command);
+                let result = if command.action == b'a' {
+                    self.steer(&command, id)
+                } else {
+                    self.compose_frames(&command, id)
+                };
+                self.answer(&command, id, result);
+            }
             _ => self.answer(&command, command.id, Err("EINVAL:unsupported action")),
+        }
+    }
+
+    fn receive(&mut self, command: &Command, bytes: Option<Vec<u8>>) {
+        if command.action == b'f' {
+            let id = self.target(command);
+            let result = self.add_frame(command, id, bytes);
+            self.answer(command, id, result);
+        } else {
+            self.transmit(command, bytes);
+        }
+    }
+
+    fn target(&self, command: &Command) -> u32 {
+        if command.id == 0 {
+            self.graphics
+                .numbers
+                .get(&command.number)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            command.id
+        }
+    }
+
+    fn add_frame(
+        &mut self,
+        command: &Command,
+        id: u32,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<(), &'static str> {
+        let root = self
+            .graphics
+            .images
+            .get(&id)
+            .cloned()
+            .ok_or(MISSING_IMAGE)?;
+        let data = load(command, bytes)?;
+        let count = self
+            .graphics
+            .animations
+            .get(&id)
+            .map_or(1, Animation::count);
+        let (edit, base) = (command.rows as usize, command.columns as usize);
+        if edit > count || base > count {
+            return Err(MISSING_FRAME);
+        }
+        if !fits([command.x, command.y], [data.width, data.height], &root) {
+            return Err("EINVAL:the frame data is outside the image");
+        }
+        let mut canvas = match (if edit == 0 { base } else { edit }).checked_sub(1) {
+            None => command.offset[1]
+                .to_be_bytes()
+                .repeat(root.pixels.len() / 4),
+            Some(index) => self
+                .graphics
+                .frame(id, index)
+                .ok_or(MISSING_FRAME)?
+                .pixels
+                .clone(),
+        };
+        paint(
+            &mut canvas,
+            root.width,
+            &data,
+            [0, 0],
+            [command.x, command.y],
+            [data.width, data.height],
+            command.offset[0] == 1,
+        );
+        let image = Image {
+            width: root.width,
+            height: root.height,
+            pixels: canvas,
+        };
+        if let Some(index) = edit.checked_sub(1) {
+            if let Some(gap) = gap(command) {
+                self.graphics
+                    .animations
+                    .entry(id)
+                    .or_insert_with(Animation::new)
+                    .set_gap(index, gap);
+            }
+            self.graphics.replace(id, index, image);
+            return Ok(());
+        }
+        let animation = self
+            .graphics
+            .animations
+            .entry(id)
+            .or_insert_with(Animation::new);
+        if root.pixels.len() + animation.bytes() + image.pixels.len() > QUOTA {
+            return Err("ENOSPC:the frames of this image exceed the quota");
+        }
+        animation.frames.push(Frame {
+            image: Arc::new(image),
+            gap: gap(command).unwrap_or(DEFAULT_GAP),
+        });
+        self.graphics.order.retain(|&held| held != id);
+        self.graphics.order.push_back(id);
+        self.graphics.trim_images(QUOTA);
+        Ok(())
+    }
+
+    fn steer(&mut self, command: &Command, id: u32) -> Result<(), &'static str> {
+        if !self.graphics.images.contains_key(&id) {
+            return Err(MISSING_IMAGE);
+        }
+        let animation = self
+            .graphics
+            .animations
+            .entry(id)
+            .or_insert_with(Animation::new);
+        let (affected, current) = (command.rows as usize, command.columns as usize);
+        if affected > animation.count() || current > animation.count() {
+            return Err(MISSING_FRAME);
+        }
+        if let (Some(index), Some(gap)) = (affected.checked_sub(1), gap(command)) {
+            animation.set_gap(index, gap);
+        }
+        if let Some(index) = current.checked_sub(1) {
+            animation.current = index;
+            animation.shown = None;
+            animation.stale = true;
+        }
+        if command.height != 0 {
+            animation.loops = command.height;
+        }
+        match command.width {
+            1 => animation.stop(),
+            2 => animation.start(Play::Loading),
+            3 => animation.start(Play::Running),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn compose_frames(&mut self, command: &Command, id: u32) -> Result<(), &'static str> {
+        let root = self
+            .graphics
+            .images
+            .get(&id)
+            .cloned()
+            .ok_or(MISSING_IMAGE)?;
+        let (source, target) = (command.rows as usize, command.columns as usize);
+        let [above, below] = [source, target].map(|number| {
+            number
+                .checked_sub(1)
+                .and_then(|index| self.graphics.frame(id, index))
+        });
+        let (Some(above), Some(below)) = (above, below) else {
+            return Err(MISSING_FRAME);
+        };
+        let size = [
+            if command.w == 0 {
+                root.width
+            } else {
+                command.w
+            },
+            if command.h == 0 {
+                root.height
+            } else {
+                command.h
+            },
+        ];
+        let to = [command.x, command.y];
+        if !fits(command.offset, size, &root) || !fits(to, size, &root) {
+            return Err("EINVAL:the rectangle is outside the image");
+        }
+        if source == target
+            && (0..2).all(|axis| {
+                command.offset[axis] < to[axis] + size[axis]
+                    && to[axis] < command.offset[axis] + size[axis]
+            })
+        {
+            return Err("EINVAL:the rectangles overlap");
+        }
+        let mut pixels = below.pixels.clone();
+        paint(
+            &mut pixels,
+            root.width,
+            &above,
+            command.offset,
+            to,
+            size,
+            command.stay,
+        );
+        self.graphics.replace(
+            id,
+            target - 1,
+            Image {
+                width: root.width,
+                height: root.height,
+                pixels,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn animate(&mut self, now: Instant) -> Option<Instant> {
+        if self.graphics.animations.is_empty() {
+            return None;
+        }
+        let visible: HashSet<u32> = (0..self.lines())
+            .flat_map(|line| self.visible_row(line).tiles())
+            .map(|tile| tile.image)
+            .collect();
+        visible
+            .into_iter()
+            .filter_map(|id| self.step(id, now))
+            .min()
+    }
+
+    fn step(&mut self, id: u32, now: Instant) -> Option<Instant> {
+        let animation = self.graphics.animations.get_mut(&id)?;
+        let (moved, due) = animation.advance(now);
+        if std::mem::take(&mut animation.stale) || moved {
+            self.show(id);
+        }
+        due
+    }
+
+    fn show(&mut self, id: u32) {
+        let Some(image) = self.graphics.current(id) else {
+            return;
+        };
+        let Some(showings) = self.graphics.showings.get_mut(&id) else {
+            return;
+        };
+        showings.retain(|showing| showing.picture.strong_count() > 0);
+        let swaps: Vec<(Arc<Picture>, Arc<Picture>)> = showings
+            .iter_mut()
+            .filter_map(|showing| {
+                let old = showing.picture.upgrade()?;
+                let new = Arc::new(Picture {
+                    serial: old.serial,
+                    width: old.width,
+                    height: old.height,
+                    pixels: showing.render(&image),
+                });
+                showing.picture = Arc::downgrade(&new);
+                Some((old, new))
+            })
+            .collect();
+        for (old, new) in &swaps {
+            if let Some(held) = self
+                .graphics
+                .placed
+                .iter_mut()
+                .find(|held| held.as_ptr() == Arc::as_ptr(old))
+            {
+                *held = Arc::downgrade(new);
+            }
+        }
+        let top = self.grid.history() - self.display_offset;
+        for (index, row) in self.grid.rows_mut().enumerate() {
+            if swap(row, id, &swaps)
+                && let Some(dirty) = index
+                    .checked_sub(top)
+                    .and_then(|line| self.damage.lines.get_mut(line))
+            {
+                *dirty = true;
+            }
+        }
+        for row in self.inactive.rows_mut() {
+            swap(row, id, &swaps);
         }
     }
 
@@ -422,23 +955,17 @@ impl Term {
         if self.graphics.images.remove(&id).is_some() {
             self.graphics.order.retain(|&held| held != id);
             self.graphics.numbers.retain(|_, held| *held != id);
+            self.graphics.animations.remove(&id);
+            self.graphics.showings.remove(&id);
             self.strip(|tile| tile.image == id);
         }
     }
 
     fn put(&mut self, command: &Command) {
-        let id = if command.id == 0 {
-            self.graphics
-                .numbers
-                .get(&command.number)
-                .copied()
-                .unwrap_or(0)
-        } else {
-            command.id
-        };
-        let result = match self.graphics.images.get(&id).cloned() {
+        let id = self.target(command);
+        let result = match self.graphics.current(id) {
             Some(image) => self.place(command, id, &image),
-            None => Err("ENOENT:no image with this id"),
+            None => Err(MISSING_IMAGE),
         };
         self.answer(command, id, result);
     }
@@ -473,11 +1000,11 @@ impl Term {
             }
             (across, down) => ([across, down], [fit(down, h, w).min(across), down]),
         };
-        let scaled = image.premultiplied([x, y, w, h], inner[0], inner[1]);
-        let pixels = if area == inner {
-            scaled
-        } else {
-            framed(&scaled, inner, area)
+        let showing = Showing {
+            picture: Weak::new(),
+            source: [x, y, w, h],
+            inner,
+            area,
         };
         let (left, top) = (
             command.offset[0].min(cell_w - 1),
@@ -486,7 +1013,15 @@ impl Term {
         if id != 0 && command.placement != 0 {
             self.strip(|tile| tile.image == id && tile.placement == command.placement);
         }
-        let picture = self.picture(area[0], area[1], pixels);
+        let picture = self.picture(area[0], area[1], showing.render(image));
+        if id != 0 {
+            let showings = self.graphics.showings.entry(id).or_default();
+            showings.retain(|held| held.picture.strong_count() > 0);
+            showings.push(Showing {
+                picture: Arc::downgrade(&picture),
+                ..showing
+            });
+        }
         self.lay(
             &Spot {
                 picture,
@@ -586,6 +1121,16 @@ impl Term {
 
     fn delete(&mut self, command: &Command) {
         let kind = command.delete.to_ascii_lowercase();
+        if kind == b'f' {
+            let id = self.target(command);
+            if let Some(animation) = self.graphics.animations.get_mut(&id) {
+                animation.stale |= animation.current != 0;
+                animation.frames.clear();
+                animation.current = 0;
+                animation.played = 0;
+            }
+            return;
+        }
         let id = if kind == b'n' {
             self.graphics
                 .numbers
@@ -665,6 +1210,12 @@ impl Term {
         self.graphics
             .numbers
             .retain(|_, image| !freed.contains(image));
+        self.graphics
+            .animations
+            .retain(|image, _| !freed.contains(image));
+        self.graphics
+            .showings
+            .retain(|image, _| !freed.contains(image));
     }
 
     fn strip(&mut self, doomed: impl Fn(&Tile) -> bool) {
@@ -681,7 +1232,20 @@ mod tests {
 
     use dartel_image::Image;
 
-    use super::{Graphics, Picture, append};
+    use super::{Animation, Frame, Graphics, Picture, append};
+
+    fn animate(graphics: &mut Graphics, id: u32, bytes: usize) {
+        let mut animation = Animation::new();
+        animation.frames.push(Frame {
+            image: Arc::new(Image {
+                width: 1,
+                height: 1,
+                pixels: vec![0; bytes],
+            }),
+            gap: 40,
+        });
+        graphics.animations.insert(id, animation);
+    }
 
     fn keep(graphics: &mut Graphics, id: u32, bytes: usize) {
         graphics.images.insert(
@@ -767,6 +1331,26 @@ mod tests {
         keep(&mut graphics, 2, 8);
         graphics.trim_images(16);
         assert_eq!(graphics.order, [1, 2]);
+    }
+
+    #[test]
+    fn animation_frames_count_against_the_quota() {
+        let mut graphics = Graphics::default();
+        keep(&mut graphics, 1, 8);
+        keep(&mut graphics, 2, 4);
+        animate(&mut graphics, 2, 8);
+        graphics.trim_images(16);
+        assert_eq!(graphics.order, [2]);
+    }
+
+    #[test]
+    fn dropped_image_takes_its_frames_along() {
+        let mut graphics = Graphics::default();
+        keep(&mut graphics, 1, 4);
+        animate(&mut graphics, 1, 8);
+        keep(&mut graphics, 2, 8);
+        graphics.trim_images(16);
+        assert!(graphics.animations.is_empty());
     }
 
     #[test]

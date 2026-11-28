@@ -61,7 +61,7 @@ Dartel/
 │   │   │   ├── charset.rs    # DEC special graphics
 │   │   │   ├── color.rs      # Rgb, Color, Palette, xterm 256-color table
 │   │   │   ├── find.rs       # Scrollback search, text extraction, words, link targets, prompt rows
-│   │   │   ├── graphics.rs   # Kitty graphics commands, Sixel placement, pictures and tiles
+│   │   │   ├── graphics.rs   # Kitty graphics commands and animation, Sixel placement, pictures and tiles
 │   │   │   ├── grid.rs       # Rows, scrollback, scrolling, resize, reflow
 │   │   │   ├── keys.rs       # Kitty keyboard protocol encoder
 │   │   │   ├── modes.rs      # Terminal mode flags
@@ -277,7 +277,13 @@ Build and test for that target run on the macOS CI job.
   way to blank a row picks one of the three.
 - A `Picture` holds premultiplied RGBA. Its serial number orders the pictures
   of one `Term` and repeats across tabs, so `Gpu` keys textures by the address
-  of the `Arc<Picture>`.
+  of the `Arc<Picture>`. The pixels of a `Picture` never change. A frame change
+  of an animation builds a new `Picture` with the serial number of the old one
+  and swaps it into the tiles, so `Gpu` uploads it as a new texture.
+- `Term` has no clock. `Term::animate` takes the time, shows the frames that
+  are due, and returns the next deadline only for a running animation with a
+  tile on the screen. It returns at once when no image has animation state,
+  and the window calls it for the active tab on every frame.
 - The counts in `Scene::layers` add up to the length of `Scene::quads`. The
   texture rectangle of a `Quad` has a size, and a size of zero means a solid
   quad.
