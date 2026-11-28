@@ -82,6 +82,20 @@ A shell tells Dartel where prompts and output are by printing these sequences.
 
 The OSC 133 marks are ignored on the alternate screen.
 
+Dartel carries scripts that print these sequences for zsh, bash, and fish. A shell that Dartel starts has `DARTEL_BIN` set to the absolute path of the Dartel executable, and `dartel shell NAME` prints the script for the shell `NAME`. Add the line for your shell to its startup file. The line does nothing in a shell that Dartel did not start.
+
+| Shell | File | Line |
+| --- | --- | --- |
+| zsh | `~/.zshrc` | `[[ -n $DARTEL_BIN ]] && eval "$("$DARTEL_BIN" shell zsh)"` |
+| bash | `~/.bash_profile` | `[ -n "$DARTEL_BIN" ] && eval "$("$DARTEL_BIN" shell bash)"` |
+| fish | `~/.config/fish/config.fish` | `test -n "$DARTEL_BIN"; and "$DARTEL_BIN" shell fish \| source` |
+
+Dartel starts the shell as a login shell, so bash reads `~/.bash_profile`. The line can go in `~/.bashrc` instead when `~/.bash_profile` sources it.
+
+The scripts print `OSC 133 ; A` before each prompt, `OSC 133 ; C` before a command runs, `OSC 133 ; D` after a command ran, and `OSC 7` when the shell starts and when the working directory changes. An empty command line prints no `OSC 133 ; D`. The scripts add hooks with `add-zsh-hook` in zsh, through `PROMPT_COMMAND` and `PS0` in bash, and through the `fish_prompt` and `fish_preexec` events in fish, so existing hooks and the look of the prompt stay as they were. Loading a script twice adds no second hook.
+
+The bash script needs bash 4.4 or later for `OSC 133 ; C` and `OSC 133 ; D`, because it detects a command through `PS0`. With an older bash, the output shortcut and the bar of a failed command do nothing, and the prompt shortcuts and `OSC 7` still work.
+
 ## Links
 
 Text printed inside an OSC 8 link is underlined. A click with Command on macOS, or with Ctrl+Shift on Linux, opens what is under the pointer through `open` or `xdg-open`. Dartel looks for these in order:

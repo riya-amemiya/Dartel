@@ -1,3 +1,4 @@
+use std::env;
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::PathBuf;
@@ -80,7 +81,7 @@ impl Session {
         history: usize,
         proxy: EventLoopProxy<Signal>,
     ) -> io::Result<Session> {
-        let pty = Pty::spawn(login_shell(directory), size)?;
+        let pty = Pty::spawn(login_shell(directory, env::current_exe().ok()), size)?;
         let mut term = Term::with_palette(
             usize::from(size.lines),
             usize::from(size.cols),

@@ -41,7 +41,7 @@ flowchart TD
 | `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
 | `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, font discovery and rasterization, the wgpu surface, the picture textures, and the draw calls |
-| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` subcommands, winit event handling, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
+| `dartel` | `main`, `app`, `session`, `input`, `clipboard`, `opener` | The `config` and `shell` subcommands, the embedded shell integration scripts, winit event handling, tabs, selection, prompts, shortcuts, the threads around each PTY, key events, the clipboard, and the launch of links |
 
 ## Threads and data flow
 
@@ -356,6 +356,25 @@ instead, because full-screen applications redraw it themselves.
   draws a bar in palette color 9 in the left padding of a failed prompt row.
 - OSC 7 stores the host and the percent-decoded path of a `file` URL, and
   `Term::directory` returns them.
+- The scripts in `crates/dartel/shell` print these marks for zsh, bash, and
+  fish. `include_str!` embeds them in the binary, and `dartel shell NAME`
+  prints one. `Session::spawn` passes `std::env::current_exe` to
+  `dartel_pty::login_shell`, which sets `DARTEL_BIN` to that path when it is
+  absolute and removes the variable otherwise, so the line in a startup file
+  finds the executable inside `Dartel.app`.
+- Each script prints `A` from the hook that runs before the prompt and `C`
+  from the hook that runs before a command: `precmd` and `preexec` in zsh,
+  `PROMPT_COMMAND` and `PS0` in bash, and the `fish_prompt` and
+  `fish_preexec` events in fish. The command hook sets a flag, and the
+  prompt hook prints `D` with the exit status only while the flag is set, so
+  an empty command line and the first prompt print no `D`. The prompt hook
+  prints OSC 7 when `PWD` differs from the last reported directory. The path
+  keeps ASCII letters, digits, and `/ . _ ~ -`, and every other byte becomes
+  `%XX`. The host is `$HOST`, `$HOSTNAME`, or `$hostname`, which Dartel
+  compares with the `uname` node name. bash prepends its hook to
+  `PROMPT_COMMAND` so that `$?` is still the status of the command, and its
+  `PS0` sets the flag through an arithmetic expression in a substring length
+  that expands to nothing. A bash without `PS0` prints neither `C` nor `D`.
 - OSC 8 interns the URI in a table of `Term` and stores its id in the `Style`,
   so a link adds no bytes to a cell. The table holds 65535 URIs of at most
   4096 bytes each, and `Scene` underlines the cells that carry a link id.
