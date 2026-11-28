@@ -84,6 +84,12 @@ The UI thread sleeps in `ControlFlow::Wait`. It switches to
 timeout, or a notice is pending. A frame is skipped while the application
 holds synchronized update mode, for at most 150 ms.
 
+A key press that is sent to the shell requests no frame by itself. The echo
+comes back through the reader thread, and its `Signal::Wake` draws the one
+frame that shows it. The key press requests a frame only when it changes
+something on the UI thread: it clears a selection, returns a scrolled view to
+the bottom, or restarts the blink while the cursor is hidden.
+
 ## Tabs
 
 One window holds a list of tabs and draws the active one. A tab is a session

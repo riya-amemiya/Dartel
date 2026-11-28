@@ -1012,18 +1012,23 @@ impl View {
         {
             return;
         }
-        let (modes, keyboard) = {
+        let (modes, keyboard, scrolled) = {
             let term = self.session().term();
-            (term.modes(), term.keyboard())
+            (term.modes(), term.keyboard(), term.display_offset() > 0)
         };
         if let Some(bytes) = input::encode(event, self.modifiers, modes, keyboard) {
             if pressed {
-                self.session().term().reset_display();
-                self.tabs[self.active].selection = None;
+                let hidden = self.blinking
+                    && !(self.blink.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2);
                 self.blink = Instant::now();
+                if scrolled {
+                    self.session().term().reset_display();
+                }
+                if self.tabs[self.active].selection.take().is_some() || scrolled || hidden {
+                    self.window.request_redraw();
+                }
             }
             self.session().send(bytes);
-            self.window.request_redraw();
         }
     }
 
