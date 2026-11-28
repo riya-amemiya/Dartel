@@ -995,7 +995,10 @@ impl Scene {
             self.stale = true;
         }
         self.shift(term);
-        if !(self.compose_rows(term) && self.ligate_rows(term) && self.unite_rows(term)) {
+        if !(self.compose_rows(term)
+            && (!self.fonts.ligatures() || self.ligate_rows(term))
+            && (!(self.seen.joiner || self.seen.linker) || self.unite_rows(term)))
+        {
             self.forget_glyphs();
             self.rows.resize_with(term.lines(), Row::default);
             self.compose_rows(term);
@@ -1264,32 +1267,45 @@ impl Scene {
     }
 
     fn unite_rows(&mut self, term: &Term) -> bool {
-        !(self.seen.joiner || self.seen.linker)
-            || (0..term.lines())
-                .all(|line| !(self.stale || term.damage().line(line)) || self.unite(term, line))
+        if !(self.seen.joiner || self.seen.linker) {
+            return true;
+        }
+        let Some(held) = (0..term.lines()).try_fold(false, |held, line| {
+            if self.stale || term.damage().line(line) {
+                self.unite(term, line).map(|found| held | found)
+            } else {
+                Some(held)
+            }
+        }) else {
+            return false;
+        };
+        if !held && (self.stale || term.damage().is_full()) {
+            self.seen = Seen::default();
+            self.glyphs
+                .retain(|&(c, _), _| !(c == JOINER || linking(c)));
+        }
+        true
     }
 
-    fn unite(&mut self, term: &Term, line: usize) -> bool {
+    fn unite(&mut self, term: &Term, line: usize) -> Option<bool> {
         let source = term.visible_row(line);
         let cells = &source.cells()[..source.used().min(term.cols())];
         let marks = source.mark_entries();
         if !(marks.iter().any(|&(_, mark)| mark == JOINER) || self.seen.linker && candidates(cells))
         {
-            return true;
+            return Some(false);
         }
         self.chains.clear();
         sequences(marks, cells, &mut self.chains);
         if self.chains.is_empty() {
-            return true;
+            return Some(true);
         }
         let chains = std::mem::take(&mut self.chains);
         let mut row = std::mem::take(&mut self.rows[line]);
-        let complete = self
-            .unite_glyphs(term, line, cells, &chains, &mut row)
-            .is_some();
+        let complete = self.unite_glyphs(term, line, cells, &chains, &mut row);
         self.rows[line] = row;
         self.chains = chains;
-        complete
+        complete.map(|()| true)
     }
 
     fn unite_glyphs(
