@@ -74,6 +74,7 @@ pub struct Fonts {
     database: Database,
     faces: Vec<Face>,
     styles: [usize; 4],
+    preferred: Vec<ID>,
     fallbacks: HashMap<char, Option<usize>>,
     context: ScaleContext,
     size: f32,
@@ -90,7 +91,7 @@ fn premultiplied(mut pixels: Vec<u8>) -> Vec<u8> {
 }
 
 impl Fonts {
-    pub fn new(family: &str, size: f32) -> Option<Fonts> {
+    pub fn new(family: &str, fallback: &[String], size: f32) -> Option<Fonts> {
         let mut database = Database::new();
         database.load_system_fonts();
         let regular = database
@@ -128,10 +129,20 @@ impl Fonts {
             variant(Weight::NORMAL, Style::Italic),
             variant(Weight::BOLD, Style::Italic),
         ];
+        let preferred = fallback
+            .iter()
+            .filter_map(|name| {
+                database.query(&Query {
+                    families: &[Family::Name(name)],
+                    ..Query::default()
+                })
+            })
+            .collect();
         let mut fonts = Fonts {
             database,
             faces: Vec::new(),
             styles: [0; 4],
+            preferred,
             fallbacks: HashMap::new(),
             context: ScaleContext::new(),
             size,
@@ -217,14 +228,16 @@ impl Fonts {
     }
 
     fn discover(&mut self, c: char) -> Option<usize> {
-        let id = FALLBACKS
+        let id = self
+            .preferred
             .iter()
-            .filter_map(|name| {
+            .copied()
+            .chain(FALLBACKS.iter().filter_map(|name| {
                 self.database.query(&Query {
                     families: &[Family::Name(name)],
                     ..Query::default()
                 })
-            })
+            }))
             .chain(
                 self.database
                     .faces()

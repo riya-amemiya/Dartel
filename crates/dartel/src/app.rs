@@ -145,6 +145,7 @@ fn pty_size(scene: &Scene, size: PhysicalSize<u32>) -> Size {
 fn scene(config: &Config, scale: f64) -> Option<Scene> {
     Scene::new(
         &config.font_family,
+        &config.font_fallback,
         (config.font_size * scale) as f32,
         (config.padding * scale).round() as i32,
     )

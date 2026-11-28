@@ -27,10 +27,12 @@ const PADDING: RangeInclusive<f64> = 0.0..=64.0;
 const COLUMNS: RangeInclusive<i64> = 2..=1000;
 const LINES: RangeInclusive<i64> = 1..=1000;
 const SCROLLBACK: RangeInclusive<i64> = 0..=1_000_000;
+const FALLBACK_NAMES: usize = 16;
+const NAME_BYTES: RangeInclusive<usize> = 1..=255;
 const SHADES: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
 ];
-const MAGIC: &[u8; 8] = b"DARTEL\x00\x02";
+const MAGIC: &[u8; 8] = b"DARTEL\x00\x03";
 const ACTIONS: usize = 24;
 const ACTION_NAMES: [&str; ACTIONS] = [
     "paste",
@@ -422,6 +424,7 @@ impl From<toml::Error> for Error {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub font_family: String,
+    pub font_fallback: Vec<String>,
     pub font_size: f64,
     pub columns: u16,
     pub lines: u16,
@@ -507,6 +510,59 @@ fn color(section: &str, entry: &Entry<'_>) -> Result<Rgb, toml::Error> {
     .ok_or_else(|| invalid(section, entry, "a color such as \"#212733\""))
 }
 
+fn names(section: &str, entry: &Entry<'_>) -> Result<Vec<String>, toml::Error> {
+    match &entry.value {
+        Value::Array(items) if items.len() <= FALLBACK_NAMES => items
+            .iter()
+            .map(|item| match item {
+                Value::String(name) if NAME_BYTES.contains(&name.len()) => Some(name.to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        invalid(
+            section,
+            entry,
+            &format!(
+                "an array of at most {FALLBACK_NAMES} strings of {} to {} bytes",
+                NAME_BYTES.start(),
+                NAME_BYTES.end()
+            ),
+        )
+    })
+}
+
+fn listed(names: &[String]) -> String {
+    format!(
+        "[{}]",
+        names
+            .iter()
+            .map(|name| quoted(name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn fallback(bytes: &[u8]) -> Option<(Vec<String>, &[u8])> {
+    let (&count, mut rest) = bytes.split_first()?;
+    if usize::from(count) > FALLBACK_NAMES {
+        return None;
+    }
+    let mut names = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (&length, tail) = rest.split_first()?;
+        let (name, tail) = tail.split_at_checked(usize::from(length))?;
+        if !NAME_BYTES.contains(&name.len()) {
+            return None;
+        }
+        names.push(str::from_utf8(name).ok()?.to_owned());
+        rest = tail;
+    }
+    Some((names, rest))
+}
+
 fn hex(rgb: Rgb) -> String {
     format!("\"#{:02X}{:02X}{:02X}\"", rgb.r, rgb.g, rgb.b)
 }
@@ -532,6 +588,7 @@ impl Default for Config {
         let palette = Palette::default();
         Config {
             font_family: FONT_FAMILY.into(),
+            font_fallback: Vec::new(),
             font_size: 13.0,
             columns: 80,
             lines: 24,
@@ -566,6 +623,7 @@ impl Config {
         for entry in table.entries() {
             match &*entry.key {
                 "family" => text("font.", entry)?.clone_into(&mut self.font_family),
+                "fallback" => self.font_fallback = names("font.", entry)?,
                 "size" => self.font_size = number("font.", entry, &FONT_SIZE)?,
                 _ => return Err(unknown("font.", entry)),
             }
@@ -650,8 +708,9 @@ impl Config {
     #[must_use]
     pub fn to_toml(&self) -> String {
         let mut text = format!(
-            "[font]\nfamily = {}\nsize = {:?}\n\n[window]\ncolumns = {}\nlines = {}\npadding = {:?}\n\n[scrollback]\nlines = {}\n\n[colors]\nforeground = {}\nbackground = {}\ncursor = {}\n",
+            "[font]\nfamily = {}\nfallback = {}\nsize = {:?}\n\n[window]\ncolumns = {}\nlines = {}\npadding = {:?}\n\n[scrollback]\nlines = {}\n\n[colors]\nforeground = {}\nbackground = {}\ncursor = {}\n",
             quoted(&self.font_family),
+            listed(&self.font_fallback),
             self.font_size,
             self.columns,
             self.lines,
@@ -680,7 +739,15 @@ impl Config {
 
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(89 + 2 * ACTIONS + self.font_family.len());
+        let mut bytes = Vec::with_capacity(
+            90 + 2 * ACTIONS
+                + self
+                    .font_fallback
+                    .iter()
+                    .map(|name| 1 + name.len())
+                    .sum::<usize>()
+                + self.font_family.len(),
+        );
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&self.font_size.to_le_bytes());
         bytes.extend_from_slice(&self.padding.to_le_bytes());
@@ -696,6 +763,11 @@ impl Config {
         for action in Action::ALL {
             bytes.extend_from_slice(&code(self.keys.get(action)));
         }
+        bytes.push(self.font_fallback.len() as u8);
+        for name in &self.font_fallback {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
         bytes.extend_from_slice(self.font_family.as_bytes());
         bytes
     }
@@ -709,7 +781,8 @@ impl Config {
         let (lines, rest) = rest.split_first_chunk::<2>()?;
         let (scrollback, rest) = rest.split_first_chunk::<4>()?;
         let (colors, rest) = rest.split_first_chunk::<57>()?;
-        let (codes, family) = rest.split_first_chunk::<{ 2 * ACTIONS }>()?;
+        let (codes, rest) = rest.split_first_chunk::<{ 2 * ACTIONS }>()?;
+        let (font_fallback, family) = fallback(rest)?;
         let mut keys = Keys([None; ACTIONS]);
         for (action, pair) in Action::ALL.into_iter().zip(codes.as_chunks::<2>().0) {
             keys.set(
@@ -730,6 +803,7 @@ impl Config {
         };
         let config = Config {
             font_family: str::from_utf8(family).ok()?.to_owned(),
+            font_fallback,
             font_size: f64::from_le_bytes(*font_size),
             columns: u16::from_le_bytes(*columns),
             lines: u16::from_le_bytes(*lines),

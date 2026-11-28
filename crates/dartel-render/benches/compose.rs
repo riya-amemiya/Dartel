@@ -166,7 +166,7 @@ fn measure(scene: &mut Scene, load: &Load, setup: &Setup, width: u32) -> [f64; 3
 
 fn main() {
     let setup = setup();
-    let Some(mut scene) = Scene::new("", FONT_SIZE, PADDING) else {
+    let Some(mut scene) = Scene::new("", &[], FONT_SIZE, PADDING) else {
         eprintln!("no monospace font is installed");
         return;
     };
