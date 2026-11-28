@@ -12,5 +12,12 @@ unicode-width.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
+[dev-dependencies]
+dartel-vt.workspace = true
+
+[[bench]]
+name = "compose"
+harness = false
+
 [lints]
 workspace = true

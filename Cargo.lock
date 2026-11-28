@@ -408,6 +408,7 @@ name = "dartel-render"
 version = "0.1.0"
 dependencies = [
  "dartel-term",
+ "dartel-vt",
  "fontdb",
  "swash",
  "unicode-width",
