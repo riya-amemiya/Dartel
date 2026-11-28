@@ -208,6 +208,11 @@ Build and test for that target run on the macOS CI job.
   default cell, and `Row::wide` is set once a wide character was written.
   Every method of `Row` that writes cells keeps both, because clearing a row
   and the check for a split wide character rely on them.
+- `Row` is 40 bytes. Combining marks and image tiles live in `Extras` behind
+  `Row::extras`, which is `None` unless the row holds one of them. A method
+  that can empty both calls `Row::prune`, because `Row::release` takes the
+  slow path for every row whose `extras` is set. Do not add a field without
+  measuring throughput.
 - `Grid` is a ring. `Grid::slot` maps a row index to its place in the `Vec`,
   and a method that changes the number of rows calls `Grid::settle` first.
 - A change to `pen.style` is followed by `Term::restyle`, which makes the next

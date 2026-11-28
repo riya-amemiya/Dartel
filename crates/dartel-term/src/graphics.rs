@@ -560,7 +560,7 @@ impl Term {
             if spot.fragile {
                 row.uncover(covered.clone());
             }
-            row.tiles_mut().push(Tile {
+            row.place(Tile {
                 picture: Arc::clone(&spot.picture),
                 column: column as u16,
                 left: spot.left as u16,
@@ -669,9 +669,7 @@ impl Term {
 
     fn strip(&mut self, doomed: impl Fn(&Tile) -> bool) {
         for row in self.grid.rows_mut().chain(self.inactive.rows_mut()) {
-            if !row.tiles().is_empty() {
-                row.tiles_mut().retain(|tile| !doomed(tile));
-            }
+            row.retain_tiles(|tile| !doomed(tile));
         }
         self.damage.full = true;
     }

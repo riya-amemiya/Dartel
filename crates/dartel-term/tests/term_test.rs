@@ -1451,3 +1451,8 @@ fn wide_characters_after_narrow_text_keep_their_columns() {
     assert!(term.grid().row(0).cells()[2].is_spacer());
     assert!(term.grid().row(0).cells()[4].is_wide());
 }
+
+#[test]
+fn row_takes_forty_bytes() {
+    assert_eq!(std::mem::size_of::<Row>(), 40);
+}
