@@ -19,11 +19,10 @@ Dartel/
 ├── rustfmt.toml              # Formatting options that stable rustfmt accepts
 ├── .mergify.yml              # Merge protection and merge queue rules
 ├── crates/
-│   ├── dartel-vt/            # VT parser, depends on memchr
+│   ├── dartel-vt/            # VT parser, depends on memchr and hc-internal
 │   │   ├── src/
 │   │   │   ├── lib.rs        # Parser state machine and the Perform trait
 │   │   │   ├── params.rs     # CSI parameters and subparameters
-│   │   │   ├── utf8.rs       # UTF-8 decoder
 │   │   │   └── scan/         # Length of the leading printable ASCII run
 │   │   │       ├── mod.rs    # Picks the implementation by target feature
 │   │   │       ├── neon.rs   # aarch64
@@ -32,7 +31,7 @@ Dartel/
 │   │   └── tests/
 │   │       ├── scan_test.rs
 │   │       └── vt_test.rs
-│   ├── dartel-search/        # Search over a byte buffer
+│   ├── dartel-search/        # Search over a byte buffer, depends on hc-internal
 │   │   ├── src/
 │   │   │   └── lib.rs        # Literal and regex queries, parallel scan, URL detection
 │   │   └── tests/
@@ -467,8 +466,9 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
 | Crate | Purpose |
 | ----- | ------- |
 | `fontdb` | System font discovery and fallback lookup |
+| `hc-internal` | UTF-8 decoding in the parser, and the matcher, chunk split, and worker count of scrollback search |
 | `memchr` | Byte and substring search |
-| `regex` | Regex search over scrollback |
+| `regex` | URL detection in scrollback |
 | `rustix` | PTY, termios, and process calls |
 | `swash` | Glyph rasterization and ligature shaping |
 | `umt_rust` | Hex color parsing for OSC sequences and settings, base64 decoding for OSC 52 |
@@ -489,9 +489,12 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
   on the change, and compare the best rates. Compare `Scene::compose_row` the
   same way with `cargo bench -p dartel-render --bench compose`, by the best
   times.
-- The search foundation of happy-cracking is `pub(crate)` and cannot be a
-  dependency. Its designs are ported instead, and `docs/architecture.md` lists
-  them.
+- `hc-internal`, the search foundation of happy-cracking, is a dependency.
+  Use what it exports instead of writing a copy. When Dartel has a faster
+  version of something it exports, move that version into happy-cracking and
+  take it from the next `hc-internal` release, so both projects run it.
+  `docs/architecture.md` lists what comes from `hc-internal` and the one
+  design that was ported instead.
 - `umt_rust` already provides hex color parsing and base64 decoding. Prefer it
   over a new dependency when it has the function. `umt_from_base64` returns a
   UTF-8 string, so binary payloads go through `dartel_image::base64`.

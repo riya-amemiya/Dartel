@@ -1,10 +1,9 @@
 mod params;
 pub mod scan;
-mod utf8;
 
 pub use params::{MAX_PARAMS, Params, ParamsIter};
 
-use utf8::Decoded;
+use hc_internal::grep::bytes::{Decoded, decode};
 
 pub const MAX_INTERMEDIATES: usize = 2;
 pub const MAX_OSC_PARAMS: usize = 16;
@@ -125,7 +124,7 @@ impl Parser {
             self.pending[usize::from(self.pending_len)] = bytes[index];
             self.pending_len += 1;
             index += 1;
-            match utf8::decode(&self.pending[..usize::from(self.pending_len)]) {
+            match decode(&self.pending[..usize::from(self.pending_len)]) {
                 Decoded::Char(c, _) => {
                     performer.print(c);
                     self.pending_len = 0;
@@ -224,7 +223,7 @@ impl Parser {
         let mut count = 0;
         let mut index = 0;
         while index < bytes.len() && bytes[index] >= 0x80 {
-            let (c, len) = match utf8::decode(&bytes[index..]) {
+            let (c, len) = match decode(&bytes[index..]) {
                 Decoded::Char(c, len) => (c, len),
                 Decoded::Invalid(len) => (char::REPLACEMENT_CHARACTER, len),
                 Decoded::Incomplete => {

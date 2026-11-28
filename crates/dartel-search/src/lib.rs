@@ -2,9 +2,13 @@ use std::num::NonZero;
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use memchr::memmem::Finder;
+pub use hc_internal::grep::matcher::Match;
+use hc_internal::grep::matcher::Matcher;
+use hc_internal::grep::regex::{Error, RegexMatcher, RegexMatcherBuilder};
+use hc_internal::grep::searcher::split_chunks;
+use hc_internal::walker::tree_threads;
 use memchr::{memchr, memchr_iter};
-use regex::bytes::{Regex, RegexBuilder};
+use regex::bytes::Regex;
 
 const PARALLEL_THRESHOLD: usize = 1 << 20;
 
@@ -32,32 +36,6 @@ pub fn url_at(text: &[u8], offset: usize) -> Option<Range<usize>> {
         .find(|range| range.contains(&offset))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Match {
-    start: usize,
-    end: usize,
-}
-
-impl Match {
-    #[inline]
-    #[must_use]
-    pub const fn start(&self) -> usize {
-        self.start
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn end(&self) -> usize {
-        self.end
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn range(&self) -> Range<usize> {
-        self.start..self.end
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Case {
     Sensitive,
@@ -67,108 +45,39 @@ pub enum Case {
 }
 
 #[derive(Clone, Debug)]
-enum Engine {
-    Literal(Box<Finder<'static>>),
-    Pattern(Regex),
-}
-
-#[derive(Clone, Debug)]
-pub struct Query(Engine);
-
-fn folds(mut chars: impl Iterator<Item = char>, case: Case) -> bool {
-    match case {
-        Case::Sensitive => false,
-        Case::Insensitive => true,
-        Case::Smart => !chars.any(char::is_uppercase),
-    }
-}
-
-fn unescaped(pattern: &str) -> impl Iterator<Item = char> + '_ {
-    let mut escaped = false;
-    pattern.chars().filter(move |&c| {
-        let keep = !escaped && c != '\\';
-        escaped = !escaped && c == '\\';
-        keep
-    })
-}
-
-fn is_meta(c: char) -> bool {
-    matches!(
-        c,
-        '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-    )
-}
+pub struct Query(RegexMatcher);
 
 impl Query {
-    pub fn literal(text: &str, case: Case) -> Result<Query, regex::Error> {
-        if folds(text.chars(), case) {
-            Query::pattern(&regex::escape(text), true)
-        } else {
-            Ok(Query(Engine::Literal(Box::new(
-                Finder::new(text).into_owned(),
-            ))))
-        }
+    pub fn literal(text: &str, case: Case) -> Result<Query, Error> {
+        Query::build(text, case, true)
     }
 
-    pub fn regex(pattern: &str, case: Case) -> Result<Query, regex::Error> {
-        if folds(unescaped(pattern), case) || pattern.chars().any(is_meta) {
-            Query::pattern(pattern, folds(unescaped(pattern), case))
-        } else {
-            Query::literal(pattern, Case::Sensitive)
-        }
+    pub fn regex(pattern: &str, case: Case) -> Result<Query, Error> {
+        Query::build(pattern, case, false)
     }
 
-    fn pattern(pattern: &str, fold: bool) -> Result<Query, regex::Error> {
-        RegexBuilder::new(pattern)
-            .case_insensitive(fold)
+    fn build(pattern: &str, case: Case, fixed: bool) -> Result<Query, Error> {
+        RegexMatcherBuilder::new()
+            .fixed_strings(fixed)
+            .case_insensitive(case == Case::Insensitive)
+            .case_smart(case == Case::Smart)
             .multi_line(true)
-            .build()
-            .map(|regex| Query(Engine::Pattern(regex)))
+            .line_terminator(Some(b'\n'))
+            .build_many(&[pattern])
+            .map(Query)
     }
 
     #[inline]
     #[must_use]
     pub fn find_at(&self, haystack: &[u8], at: usize) -> Option<Match> {
-        match &self.0 {
-            Engine::Literal(finder) => finder.find(haystack.get(at..)?).map(|offset| Match {
-                start: at + offset,
-                end: at + offset + finder.needle().len(),
-            }),
-            Engine::Pattern(regex) => (at <= haystack.len())
-                .then(|| regex.find_at(haystack, at))
-                .flatten()
-                .map(|found| Match {
-                    start: found.start(),
-                    end: found.end(),
-                }),
-        }
+        (at <= haystack.len())
+            .then(|| self.0.find_at(haystack, at).ok().flatten())
+            .flatten()
     }
 }
 
-#[cfg(target_os = "macos")]
 fn worker_count() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, NonZero::get)
-        .min(6)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn worker_count() -> usize {
-    std::thread::available_parallelism().map_or(1, NonZero::get)
-}
-
-fn split_chunks(haystack: &[u8], chunk_size: usize) -> Vec<Range<usize>> {
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < haystack.len() {
-        let end = haystack
-            .get(start + chunk_size..)
-            .and_then(|rest| memchr(b'\n', rest))
-            .map_or(haystack.len(), |offset| start + chunk_size + offset + 1);
-        chunks.push(start..end);
-        start = end;
-    }
-    chunks
+    tree_threads(std::thread::available_parallelism().map_or(1, NonZero::get))
 }
 
 fn find_in(query: &Query, haystack: &[u8], range: Range<usize>, limit: usize) -> Vec<Match> {
@@ -177,8 +86,8 @@ fn find_in(query: &Query, haystack: &[u8], range: Range<usize>, limit: usize) ->
     while found.len() < limit
         && let Some(hit) = query.find_at(&haystack[..range.end], at)
     {
-        at = hit.end.max(hit.start + 1);
-        if hit.start < hit.end && memchr(b'\n', &haystack[hit.range()]).is_none() {
+        at = hit.end().max(hit.start() + 1);
+        if !hit.is_empty() && memchr(b'\n', &haystack[hit.range()]).is_none() {
             found.push(hit);
         }
     }
@@ -191,27 +100,13 @@ pub fn find_all(query: &Query, haystack: &[u8], limit: usize) -> Vec<Match> {
         return find_in(query, haystack, 0..haystack.len(), limit);
     }
     std::thread::scope(|scope| {
-        split_chunks(haystack, haystack.len().div_ceil(worker_count()))
+        split_chunks(haystack, b'\n', haystack.len().div_ceil(worker_count()))
             .into_iter()
-            .map(|range| scope.spawn(move || find_in(query, haystack, range, limit)))
+            .map(|(start, end)| scope.spawn(move || find_in(query, haystack, start..end, limit)))
             .collect::<Vec<_>>()
             .into_iter()
             .flat_map(|worker| worker.join().unwrap_or_default())
             .take(limit)
             .collect()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::split_chunks;
-
-    #[test]
-    fn chunks_end_on_line_terminators_and_cover_the_haystack() {
-        let haystack = b"alpha\nbeta\ngamma\ndelta";
-        assert_eq!(split_chunks(haystack, 7), vec![0..11, 11..22]);
-        assert_eq!(split_chunks(haystack, 1), vec![0..6, 6..11, 11..17, 17..22]);
-        assert_eq!(split_chunks(haystack, 100), vec![0..22]);
-        assert_eq!(split_chunks(b"", 4), Vec::<std::ops::Range<usize>>::new());
-    }
 }
