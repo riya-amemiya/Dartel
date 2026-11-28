@@ -134,9 +134,13 @@ flowchart LR
   file order, and each entry records its line for error messages.
 - The parser follows TOML 1.0 and reads tables, arrays of tables, dotted keys,
   inline tables, arrays, the four string forms, integers in four bases, floats,
-  booleans, and date-times. A date-time is checked for its shape only and kept
-  as text, so a month of 13 is accepted. Nesting is limited to 64 levels. The
-  toml-test suite has not been run against the parser.
+  booleans, and date-times. A date-time is checked for its shape and the range
+  of each field and is kept as text. Nesting is limited to 64 levels.
+- The parser was run over the TOML 1.0 file list of toml-test, as packaged in
+  `toml-test-data` 2.14.1. It accepts the 208 valid cases with the expected
+  values and rejects the 501 invalid cases. The cases with invalid UTF-8 are
+  rejected when the file is read as a string, before the parser runs. The
+  corpus is not a dependency of this repository.
 - `Config::from_toml` starts from the defaults and rejects an unknown key, a
   wrong type, and a value outside its range, each with the line number.
 - `Config::encode` writes a magic that includes a format number, the fixed

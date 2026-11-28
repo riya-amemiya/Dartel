@@ -185,8 +185,39 @@ fn shaped(text: &[u8], pattern: &[u8]) -> bool {
             })
 }
 
+fn field(digits: &[u8]) -> u32 {
+    digits
+        .iter()
+        .fold(0, |value, digit| value * 10 + u32::from(digit - b'0'))
+}
+
 fn is_date(text: &[u8]) -> bool {
-    shaped(text, b"dddd-dd-dd")
+    if !shaped(text, b"dddd-dd-dd") {
+        return false;
+    }
+    let (year, month, day) = (field(&text[..4]), field(&text[5..7]), field(&text[8..]));
+    let days = match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1..=12 => 31,
+        _ => 0,
+    };
+    (1..=days).contains(&day)
+}
+
+fn is_time(text: &[u8]) -> bool {
+    shaped(text, b"dd:dd:dd")
+        && field(&text[..2]) < 24
+        && field(&text[3..5]) < 60
+        && field(&text[6..]) <= 60
+}
+
+fn is_offset(zone: &[u8]) -> bool {
+    matches!(zone, b"Z" | b"z")
+        || ((shaped(zone, b"+dd:dd") || shaped(zone, b"-dd:dd"))
+            && field(&zone[1..3]) < 24
+            && field(&zone[4..]) < 60)
 }
 
 fn is_datetime(token: &str) -> bool {
@@ -216,12 +247,7 @@ fn is_datetime(token: &str) -> bool {
         }
         _ => tail,
     };
-    shaped(time, b"dd:dd:dd")
-        && (zone.is_empty()
-            || (dated
-                && (matches!(zone, b"Z" | b"z")
-                    || shaped(zone, b"+dd:dd")
-                    || shaped(zone, b"-dd:dd"))))
+    is_time(time) && (zone.is_empty() || (dated && is_offset(zone)))
 }
 
 fn grouped(digits: &str, digit: impl Fn(u8) -> bool) -> bool {

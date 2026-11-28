@@ -663,6 +663,79 @@ fn time_with_an_offset_is_rejected() {
 }
 
 #[test]
+fn month_outside_the_calendar_is_rejected() {
+    for date in ["1979-00-27", "1979-13-27"] {
+        assert_eq!(
+            error(&format!("a = {date}")),
+            rejected(1, &format!("`{date}` is not a valid value"))
+        );
+    }
+}
+
+#[test]
+fn day_outside_its_month_is_rejected() {
+    for date in [
+        "1979-05-00",
+        "1979-05-32",
+        "1979-04-31",
+        "1979-02-29",
+        "2100-02-29",
+    ] {
+        assert_eq!(
+            error(&format!("a = {date}")),
+            rejected(1, &format!("`{date}` is not a valid value"))
+        );
+    }
+}
+
+#[test]
+fn leap_day_is_accepted() {
+    let document = parse("a = 2024-02-29\nb = 2000-02-29T00:00:00Z").unwrap();
+    assert_eq!(value(&document, &["a"]), &Value::Datetime("2024-02-29"));
+    assert_eq!(
+        value(&document, &["b"]),
+        &Value::Datetime("2000-02-29T00:00:00Z")
+    );
+}
+
+#[test]
+fn time_field_outside_its_range_is_rejected() {
+    for time in ["24:00:00", "00:60:00", "00:00:61"] {
+        assert_eq!(
+            error(&format!("a = {time}")),
+            rejected(1, &format!("`{time}` is not a valid value"))
+        );
+    }
+}
+
+#[test]
+fn leap_second_is_accepted() {
+    let document = parse("a = 23:59:60").unwrap();
+    assert_eq!(value(&document, &["a"]), &Value::Datetime("23:59:60"));
+}
+
+#[test]
+fn offset_outside_its_range_is_rejected() {
+    for offset in ["+24:00", "-12:60"] {
+        assert_eq!(
+            error(&format!("a = 1979-05-27T07:32:00{offset}")),
+            rejected(
+                1,
+                &format!("`1979-05-27T07:32:00{offset}` is not a valid value")
+            )
+        );
+    }
+}
+
+#[test]
+fn date_time_with_an_invalid_date_keeps_the_date_in_the_message() {
+    assert_eq!(
+        error("a = 1979-13-27 07:32:00"),
+        rejected(1, "`1979-13-27` is not a valid value")
+    );
+}
+
+#[test]
 fn unclosed_table_header_is_rejected() {
     assert_eq!(
         error("[a"),
