@@ -2,6 +2,7 @@ mod cell;
 mod charset;
 mod color;
 mod find;
+mod graphics;
 mod grid;
 pub mod keys;
 mod modes;
@@ -15,6 +16,7 @@ mod style;
 pub use cell::Cell;
 pub use color::{Color, Palette, Rgb};
 pub use find::{Point, Span, Target, path_candidate};
+pub use graphics::{Picture, Tile};
 pub use grid::Grid;
 pub use modes::Modes;
 pub use row::Row;
@@ -24,6 +26,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use charset::Charset;
+use graphics::Graphics;
 use style::StyleTable;
 
 const MAX_SIZE: usize = (u16::MAX / 2) as usize;
@@ -135,6 +138,7 @@ pub struct Term {
     link_ids: HashMap<Arc<str>, u16>,
     keyboard: Vec<u8>,
     inactive_keyboard: Vec<u8>,
+    graphics: Graphics,
     outbox: Outbox,
     damage: Damage,
     display_offset: usize,
@@ -179,6 +183,7 @@ impl Term {
             link_ids: HashMap::new(),
             keyboard: Vec::new(),
             inactive_keyboard: Vec::new(),
+            graphics: Graphics::default(),
             outbox: Outbox::default(),
             damage: Damage::new(lines),
             display_offset: 0,

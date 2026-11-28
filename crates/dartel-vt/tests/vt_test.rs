@@ -27,6 +27,7 @@ enum Action {
     },
     Put(u8),
     Unhook,
+    Apc(Vec<u8>),
 }
 
 #[derive(Default)]
@@ -94,12 +95,17 @@ impl Perform for Recorder {
         });
     }
 
-    fn put(&mut self, byte: u8) {
-        self.actions.push(Action::Put(byte));
+    fn put(&mut self, bytes: &[u8]) {
+        self.actions
+            .extend(bytes.iter().map(|&byte| Action::Put(byte)));
     }
 
     fn unhook(&mut self) {
         self.actions.push(Action::Unhook);
+    }
+
+    fn apc_dispatch(&mut self, payload: &[u8]) {
+        self.actions.push(Action::Apc(payload.to_vec()));
     }
 }
 
@@ -414,15 +420,104 @@ fn dcs_with_a_colon_parameter_is_ignored_until_st() {
 }
 
 #[test]
-fn sos_pm_and_apc_strings_are_skipped() {
+fn dcs_passes_its_data_through_across_chunks() {
     assert_eq!(
-        parse(&[b"\x1b_payload\x1b\\\x1b^pm\x1b\\\x1bXsos\x1b\\x"]),
+        parse(&[b"\x1bPq#0", b"~-\x1b\\"]),
         vec![
+            Action::Hook {
+                params: Vec::new(),
+                intermediates: Vec::new(),
+                ignore: false,
+                action: b'q'
+            },
+            Action::Put(b'#'),
+            Action::Put(b'0'),
+            Action::Put(b'~'),
+            Action::Put(b'-'),
+            Action::Unhook,
+            Action::Esc {
+                intermediates: Vec::new(),
+                ignore: false,
+                byte: b'\\'
+            }
+        ]
+    );
+}
+
+#[test]
+fn dcs_drops_delete_bytes_from_its_data() {
+    assert_eq!(
+        parse(&[b"\x1bPqa\x7fb\x1b\\"])[1..4],
+        [Action::Put(b'a'), Action::Put(b'b'), Action::Unhook]
+    );
+}
+
+#[test]
+fn dcs_is_ended_by_cancel() {
+    assert_eq!(
+        parse(&[b"\x1bPqa\x18x"])[1..],
+        [
+            Action::Put(b'a'),
+            Action::Unhook,
+            Action::Execute(0x18),
+            print("x")
+        ]
+    );
+}
+
+#[test]
+fn apc_dispatches_its_payload_before_the_terminator() {
+    assert_eq!(
+        parse(&[b"\x1b_Gi=1;AAAA\x1b\\x"]),
+        vec![
+            Action::Apc(b"Gi=1;AAAA".to_vec()),
             Action::Esc {
                 intermediates: Vec::new(),
                 ignore: false,
                 byte: b'\\'
             },
+            print("x")
+        ]
+    );
+}
+
+#[test]
+fn apc_payload_split_across_chunks_is_joined() {
+    assert_eq!(
+        parse(&[b"\x1b_Gi=1", b";AAAA\x1b\\"])[0],
+        Action::Apc(b"Gi=1;AAAA".to_vec())
+    );
+}
+
+#[test]
+fn apc_is_discarded_by_cancel() {
+    assert_eq!(
+        parse(&[b"\x1b_Gi=1\x18x"]),
+        vec![Action::Execute(0x18), print("x")]
+    );
+}
+
+#[test]
+fn apc_ignores_other_c0_controls_in_the_payload() {
+    assert_eq!(
+        parse(&[b"\x1b_Ga\x07b\x1b\\"])[0],
+        Action::Apc(b"Gab".to_vec())
+    );
+}
+
+#[test]
+fn default_string_handlers_drop_dcs_and_apc_strings() {
+    let mut parser = Parser::new();
+    let mut counter = CharCounter::default();
+    parser.advance(&mut counter, b"a\x1bPqdata\x1b\\b\x1b_payload\x1b\\c");
+    assert_eq!(counter.printed, ['a', 'b', 'c']);
+}
+
+#[test]
+fn sos_and_pm_strings_are_skipped() {
+    assert_eq!(
+        parse(&[b"\x1b^pm\x1b\\\x1bXsos\x1b\\x"]),
+        vec![
             Action::Esc {
                 intermediates: Vec::new(),
                 ignore: false,
@@ -476,7 +571,7 @@ fn truncated_utf8_before_escape_is_replaced_and_the_escape_survives() {
 
 #[test]
 fn every_split_position_yields_the_same_actions() {
-    let stream = "ls\r\n\x1b[1;38:2::1:2:3mfile\x1b[0m \u{65E5}\u{672C}\u{8A9E}\x1b]0;t;i\x07\x1b(0qq\x1b(B\x1bP+q\x1b\\\x1b[?1049h\tend"
+    let stream = "ls\r\n\x1b[1;38:2::1:2:3mfile\x1b[0m \u{65E5}\u{672C}\u{8A9E}\x1b]0;t;i\x07\x1b(0qq\x1b(B\x1bP+q\x1b\\\x1bPq#0~-~\x1b\\\x1b_Gi=1;AAAA\x1b\\\x1b[?1049h\tend"
         .as_bytes();
     let whole = parse(&[stream]);
     for split in 0..=stream.len() {

@@ -123,14 +123,20 @@ fn attributes() -> WindowAttributes {
         .with_inner_size(LogicalSize::new(800.0, 520.0))
 }
 
+fn cell_size(scene: &Scene) -> [u16; 2] {
+    [scene.metrics().width, scene.metrics().height]
+        .map(|side| u16::try_from(side).unwrap_or(u16::MAX))
+}
+
 fn pty_size(scene: &Scene, size: PhysicalSize<u32>) -> Size {
     let (lines, cols) = scene.grid_size(size.width, size.height);
+    let [width, height] = cell_size(scene).map(usize::from);
     let clamp = |value: usize| u16::try_from(value).unwrap_or(u16::MAX);
     Size {
         lines: clamp(lines),
         cols: clamp(cols),
-        width: clamp(size.width as usize),
-        height: clamp(size.height as usize),
+        width: clamp(cols * width),
+        height: clamp(lines * height),
     }
 }
 
@@ -249,6 +255,7 @@ impl View {
         let opened = Session::spawn(
             self.spawned,
             pty_size(&self.scene, self.size),
+            cell_size(&self.scene),
             self.directory(),
             self.config.palette(),
             self.config.scrollback as usize,
@@ -300,7 +307,7 @@ impl View {
         self.scene.show_tabs(self.tabs.len() > 1);
         let size = pty_size(&self.scene, self.size);
         for tab in &mut self.tabs {
-            tab.session.resize(size);
+            tab.session.resize(size, cell_size(&self.scene));
             tab.anchor = None;
             tab.selection = None;
         }
@@ -541,6 +548,7 @@ impl View {
         self.window.pre_present_notify();
         if !self.gpu.draw(
             self.scene.quads(),
+            self.scene.layers(),
             [
                 f64::from(clear.r) / 255.0,
                 f64::from(clear.g) / 255.0,

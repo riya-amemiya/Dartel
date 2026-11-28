@@ -29,9 +29,11 @@ pub trait Perform {
 
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: u8) {}
 
-    fn put(&mut self, _byte: u8) {}
+    fn put(&mut self, _bytes: &[u8]) {}
 
     fn unhook(&mut self) {}
+
+    fn apc_dispatch(&mut self, _payload: &[u8]) {}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +51,8 @@ enum State {
     DcsPassthrough,
     DcsIgnore,
     OscString,
-    SosPmApcString,
+    ApcString,
+    SosPmString,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +100,8 @@ impl Parser {
             index += match self.state {
                 State::Ground => self.ground(performer, &bytes[index..]),
                 State::OscString => self.osc_string(performer, &bytes[index..]),
+                State::DcsPassthrough => self.dcs_passthrough(performer, &bytes[index..]),
+                State::ApcString => self.apc_string(performer, &bytes[index..]),
                 _ => {
                     self.step(performer, bytes[index]);
                     1
@@ -172,13 +177,52 @@ impl Parser {
         index
     }
 
-    fn osc_string<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+    fn gather(&mut self, bytes: &[u8]) -> usize {
         let run = bytes
             .iter()
             .position(|&byte| byte < 0x20)
             .unwrap_or(bytes.len());
         self.osc
             .extend_from_slice(&bytes[..run.min(MAX_OSC_BYTES.saturating_sub(self.osc.len()))]);
+        run
+    }
+
+    fn apc_string<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        let run = self.gather(bytes);
+        let Some(&byte) = bytes.get(run) else {
+            return run;
+        };
+        match byte {
+            0x1B => {
+                performer.apc_dispatch(&self.osc);
+                self.enter_escape();
+            }
+            0x18 | 0x1A => {
+                self.state = State::Ground;
+                performer.execute(byte);
+            }
+            _ => {}
+        }
+        run + 1
+    }
+
+    fn dcs_passthrough<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        let run = bytes
+            .iter()
+            .position(|&byte| matches!(byte, 0x18 | 0x1A | 0x1B | 0x7F))
+            .unwrap_or(bytes.len());
+        if run > 0 {
+            performer.put(&bytes[..run]);
+        }
+        let Some(&byte) = bytes.get(run) else {
+            return run;
+        };
+        self.step(performer, byte);
+        run + 1
+    }
+
+    fn osc_string<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        let run = self.gather(bytes);
         let Some(&byte) = bytes.get(run) else {
             return run;
         };
@@ -236,12 +280,12 @@ impl Parser {
                 State::DcsEntry => self.dcs_entry(performer, byte),
                 State::DcsParam => self.dcs_param(performer, byte),
                 State::DcsIntermediate => self.dcs_intermediate(performer, byte),
-                State::DcsPassthrough => {
-                    if byte != 0x7F {
-                        performer.put(byte);
-                    }
-                }
-                State::Ground | State::OscString | State::DcsIgnore | State::SosPmApcString => {}
+                State::Ground
+                | State::OscString
+                | State::ApcString
+                | State::DcsPassthrough
+                | State::DcsIgnore
+                | State::SosPmString => {}
             },
         }
     }
@@ -335,7 +379,11 @@ impl Parser {
                 self.state = State::EscapeIntermediate;
             }
             b'P' => self.state = State::DcsEntry,
-            b'X' | b'^' | b'_' => self.state = State::SosPmApcString,
+            b'X' | b'^' => self.state = State::SosPmString,
+            b'_' => {
+                self.osc.clear();
+                self.state = State::ApcString;
+            }
             b'[' => self.state = State::CsiEntry,
             b']' => {
                 self.osc.clear();

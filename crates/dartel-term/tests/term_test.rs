@@ -535,7 +535,7 @@ fn status_reports_answer_on_the_reply_channel() {
 #[test]
 fn device_attributes_identify_the_terminal() {
     let mut term = fed(5, 10, "\x1b[c\x1b[>c");
-    assert_eq!(reply(&mut term), "\x1b[?62;22c\x1b[>1;10;0c");
+    assert_eq!(reply(&mut term), "\x1b[?62;4;22c\x1b[>1;10;0c");
 }
 
 #[test]
@@ -551,6 +551,42 @@ fn private_mode_queries_report_set_reset_and_unknown() {
 fn text_area_size_is_reported() {
     let mut term = fed(5, 10, "\x1b[18t");
     assert_eq!(reply(&mut term), "\x1b[8;5;10t");
+}
+
+#[test]
+fn text_area_size_in_pixels_is_reported() {
+    let mut term = term(5, 10);
+    term.set_cell_size(9, 18);
+    feed(&mut term, "\x1b[14t");
+    assert_eq!(reply(&mut term), "\x1b[4;90;90t");
+}
+
+#[test]
+fn cell_size_in_pixels_is_reported() {
+    let mut term = term(5, 10);
+    term.set_cell_size(9, 18);
+    feed(&mut term, "\x1b[16t");
+    assert_eq!(reply(&mut term), "\x1b[6;18;9t");
+}
+
+#[test]
+fn cell_size_has_a_default_before_the_window_sets_it() {
+    let mut term = fed(5, 10, "\x1b[16t");
+    assert_eq!(reply(&mut term), "\x1b[6;16;8t");
+}
+
+#[test]
+fn cell_size_of_zero_is_raised_to_one_pixel() {
+    let mut term = term(5, 10);
+    term.set_cell_size(0, 0);
+    feed(&mut term, "\x1b[16t");
+    assert_eq!(reply(&mut term), "\x1b[6;1;1t");
+}
+
+#[test]
+fn unknown_window_report_is_not_answered() {
+    let mut term = fed(5, 10, "\x1b[99t");
+    assert_eq!(reply(&mut term), "");
 }
 
 #[test]

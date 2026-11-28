@@ -1,0 +1,8 @@
+[package]
+name = "dartel-image"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
