@@ -34,7 +34,7 @@ flowchart TD
 
 | Crate | Modules | Responsibility |
 | --- | --- | --- |
-| `dartel-vt` | `lib`, `params`, `utf8`, `scan` | VT state machine that calls a `Perform` implementation, and the length of the leading run of printable ASCII with NEON, SSE2, and scalar implementations |
+| `dartel-vt` | `lib`, `params`, `scan` | VT state machine that calls a `Perform` implementation, and the length of the leading run of printable ASCII with NEON, SSE2, and scalar implementations |
 | `dartel-search` | `lib` | Literal and regex search over a byte buffer, and the URL around a byte offset |
 | `dartel-image` | `lib`, `base64`, `inflate`, `png`, `sixel`, `scale` | Base64, zlib, PNG, and Sixel decoding into RGBA pixels, and scaling into premultiplied pixels |
 | `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `graphics`, `placeholder`, `keys`, `modes`, `charset` | Screen, scrollback, styles, modes, images, Unicode placeholders, the kitty keyboard encoding, and the `Perform` implementation |
@@ -331,9 +331,10 @@ stateDiagram-v2
 `CAN` and `SUB` return any state to `Ground`. `ESC` restarts a sequence from
 any state.
 
-UTF-8 is decoded by `vt::utf8`. An invalid sequence becomes one U+FFFD per
-maximal subpart. A sequence cut by the end of a read buffer is kept in a
-four-byte `pending` array and completed by the next `advance` call.
+UTF-8 is decoded by `hc_internal::grep::bytes::decode`. An invalid sequence
+becomes one U+FFFD per maximal subpart. A sequence cut by the end of a read
+buffer comes back as `Decoded::Incomplete`, and it is kept in a four-byte
+`pending` array and completed by the next `advance` call.
 
 Limits keep hostile input bounded. A CSI sequence keeps 32 parameters and 2
 intermediates. An OSC string keeps 16 parameters, and an OSC or APC string
@@ -721,10 +722,14 @@ flowchart LR
     map --> spans["Spans"]
 ```
 
-`search::Query` picks its engine once. A query with no regex metacharacter
-and no case folding uses `memchr::memmem::Finder`. Everything else compiles to
-`regex::bytes::Regex` in multi-line mode. Smart case folds only when the query
-has no uppercase letter.
+`search::Query` wraps the `RegexMatcher` of `hc-internal`, built in multi-line
+mode with `\n` as the line terminator. A query that is one plain string,
+matched case-sensitively or under smart case with an uppercase letter, runs
+`memchr::memmem::Finder`. Everything else runs `regex::bytes::Regex`. Smart
+case folds only when the literal characters of the query have no uppercase
+letter, so an uppercase letter inside an escape such as `\S` does not count.
+The chunks of a parallel search come from `split_chunks` of `hc-internal`, and
+the number of workers from its `tree_threads`.
 
 ## Rendering
 
@@ -978,18 +983,27 @@ flowchart TD
 | Default shell without `SHELL` | `/bin/zsh` | `/bin/sh` |
 | Search workers | At most 6 | All available cores |
 
-## Designs taken from happy-cracking and umt_rust
+## Code taken from happy-cracking and umt_rust
 
-The search foundation of happy-cracking lives in a `pub(crate)` module, so
-Dartel cannot depend on it. These designs were rewritten for Dartel instead.
+`hc-internal` is the search foundation of happy-cracking, published as a
+crate. `dartel-vt` and `dartel-search` depend on it for these items.
 
-| happy-cracking source under `src/hc_internal/` | Dartel use |
+| `hc-internal` item | Dartel use |
+| --- | --- |
+| `grep::bytes::decode` | UTF-8 decoding in `dartel-vt` |
+| `grep::regex::RegexMatcher` | `dartel_search::Query` |
+| `grep::searcher::split_chunks` | Line-aligned chunks of `dartel_search::find_all` |
+| `walker::tree_threads` | `dartel-search` worker count, at most 6 on macOS |
+
+`decode` and the `memmem` path that `RegexMatcher` takes under smart case with
+an uppercase letter came from Dartel. Both were faster than what `hc-internal`
+had, so they were moved into happy-cracking, and `hrg` runs them too.
+
+`hc-internal` exports no function for one design, so Dartel rewrote it.
+
+| happy-cracking source under `crates/hc-internal/src/` | Dartel use |
 | --- | --- |
 | Bitmask scans in `grep/searcher/bitcount.rs` | `dartel_vt::scan::printable_run` |
-| Maximal-subpart UTF-8 decoding in `grep/bytes.rs` | `utf8` in `dartel-vt` |
-| Literal fast path in `grep/regex/literal.rs` | `dartel_search::Query` engine selection |
-| Line-aligned chunks in `grep/searcher/parallel.rs` | `dartel_search::find_all` |
-| Thread cap of 6 on macOS in `walker/walk.rs` | `dartel-search` worker count |
 
 `umt_rust` is a direct dependency of `dartel-term`. `umt_hexa_to_rgba` parses
 OSC color specifications and the colors of the settings file, and

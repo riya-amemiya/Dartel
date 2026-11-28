@@ -25,6 +25,7 @@ dartel-search = { path = "crates/dartel-search" }
 dartel-term = { path = "crates/dartel-term" }
 dartel-vt = { path = "crates/dartel-vt" }
 fontdb = "=0.24.0"
+hc-internal = "=1.4.0"
 memchr = "=2.8.3"
 regex = "=1.13.2"
 rustix = { version = "=1.1.6", features = ["process", "pty", "stdio", "system", "termios"] }
