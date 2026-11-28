@@ -53,6 +53,8 @@ Dartel/
 │   │       ├── scale_test.rs
 │   │       └── sixel_test.rs
 │   ├── dartel-term/          # Terminal state
+│   │   ├── benches/
+│   │   │   └── throughput.rs # Parser and grid throughput over generated input
 │   │   ├── src/
 │   │   │   ├── lib.rs        # Term, cursor view, damage, public accessors
 │   │   │   ├── cell.rs       # 8-byte cell
@@ -138,6 +140,17 @@ Run the terminal, or build the optimized binary:
 ```sh
 cargo run -p dartel
 cargo build --release -p dartel
+```
+
+Measure the throughput of the parser and the grid. The benchmark prints the
+best and the median rate of each input in MiB/s. Arguments are optional and
+take the form `key=value`: `size` is the MiB of each input, `lines` and `cols`
+are the grid, `piece` is the bytes of one `Parser::advance` call, `runs` is the
+number of repetitions, and `only` keeps the inputs whose name contains it:
+
+```sh
+cargo bench -p dartel-term --bench throughput
+cargo bench -p dartel-term --bench throughput -- size=16 runs=3 only=sgr
 ```
 
 Write the settings in use to a TOML file, or load a TOML file and keep it for
@@ -342,7 +355,9 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
   `Row::write_ascii`, `Grid::scroll_up`, and `Scene::compose_row`. Timing
   `seq 1 1000000` inside a release build of the window is a quick check. The
   PTY of the kernel limits that number, so compare the parser and the grid
-  by feeding the same bytes to `Parser::advance` outside the window.
+  with `cargo bench -p dartel-term --bench throughput`, which feeds generated
+  input to `Parser::advance` outside the window. Run it on the base commit and
+  on the change, and compare the best rates.
 - The search foundation of happy-cracking is `pub(crate)` and cannot be a
   dependency. Its designs are ported instead, and `docs/architecture.md` lists
   them.
