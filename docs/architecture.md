@@ -501,6 +501,15 @@ flowchart TD
 - The glyph atlas is one 2048 by 2048 RGBA texture filled shelf by shelf. When
   it is full, the glyph cache is dropped and the visible lines are rasterized
   again.
+- Straight and double underlines are solid quads. Curly, dotted, and dashed
+  underlines are masks one cell wide that `Scene` draws into the atlas on
+  first use, one per pattern, and every underlined cell gets one textured quad
+  tinted with the underline color. The curly mask holds one period of a
+  cosine wave and the dotted and dashed masks repeat a whole number of times,
+  so neighboring cells join without a seam. The mask starts at the underline
+  position and moves up when it would pass the bottom of the cell. The masks
+  are dropped with the glyph cache, so a full atlas or a new font size draws
+  them again.
 - Glyphs for ASCII are cached in an array indexed by face and byte. Other
   glyphs are cached in a `HashMap` keyed by character and face.
 - `font::Fonts` loads four faces of one family and finds a fallback face per
