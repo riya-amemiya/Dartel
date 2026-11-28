@@ -13,6 +13,7 @@ use crate::gpu::{ATLAS_SIZE, Gpu, Layer, Quad};
 const SELECTION_ALPHA: u8 = 80;
 const MATCH_ALPHA: u8 = 90;
 const CURRENT_ALPHA: u8 = 170;
+const SCROLL_ALPHA: u8 = 128;
 const TAB_CELLS: u32 = 24;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -258,6 +259,15 @@ fn mask(pattern: Pattern, size: [u32; 2], thickness: u32) -> Vec<u8> {
     (0..size[1])
         .flat_map(|y| (0..size[0]).map(move |x| coverage(pattern, x, y, size, thickness)))
         .collect()
+}
+
+fn thumb(track: i32, cell: i32, lines: usize, history: usize, first: usize) -> (i32, i32) {
+    let length = ((i64::from(track) * lines as i64 / (history + lines) as i64) as i32)
+        .clamp(cell.min(track), track);
+    (
+        (i64::from(track - length) * first as i64 / history.max(1) as i64) as i32,
+        length,
+    )
 }
 
 fn centering(span: i32, glyph: Glyph) -> i32 {
@@ -526,6 +536,24 @@ impl Scene {
                 self.highlight_block(term, span, term.palette().foreground, SELECTION_ALPHA);
             }
             None => {}
+        }
+        if term.display_offset() > 0 {
+            let metrics = self.fonts.metrics();
+            let (offset, length) = thumb(
+                (term.lines() as u32 * metrics.height) as i32,
+                metrics.height as i32,
+                term.lines(),
+                term.grid().history(),
+                first,
+            );
+            self.quads.push(solid(
+                overlay.width as i32 - 2 * metrics.stroke as i32,
+                self.top() + offset,
+                2 * metrics.stroke as i32,
+                length,
+                term.palette().foreground,
+                SCROLL_ALPHA,
+            ));
         }
         if overlay.caret && overlay.preedit.is_empty() {
             self.compose_cursor(gpu, term, overlay.focused);
@@ -940,7 +968,7 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
-    use super::{Metrics, Pattern, band, mask};
+    use super::{Metrics, Pattern, band, mask, thumb};
 
     fn metrics(width: u32, height: u32, underline: i32, stroke: u32) -> Metrics {
         Metrics {
@@ -995,5 +1023,30 @@ mod tests {
     fn dashed_mask_leaves_a_gap_on_both_edges() {
         let pixels = mask(Pattern::Dashed, [9, 1], 1);
         assert_eq!(pixels, [0, 255, 255, 255, 255, 255, 255, 0, 0]);
+    }
+
+    #[test]
+    fn thumb_starts_at_the_top_on_the_oldest_row() {
+        assert_eq!(thumb(240, 10, 24, 76, 0), (0, 57));
+    }
+
+    #[test]
+    fn thumb_moves_down_with_the_first_visible_row() {
+        assert_eq!(thumb(240, 10, 24, 76, 38), (91, 57));
+    }
+
+    #[test]
+    fn thumb_touches_the_bottom_on_the_newest_row() {
+        assert_eq!(thumb(240, 10, 24, 76, 76), (183, 57));
+    }
+
+    #[test]
+    fn thumb_is_at_least_one_cell_long() {
+        assert_eq!(thumb(240, 10, 24, 100_000, 50_000), (115, 10));
+    }
+
+    #[test]
+    fn thumb_fills_the_track_without_history() {
+        assert_eq!(thumb(240, 10, 24, 0, 0), (0, 240));
     }
 }
