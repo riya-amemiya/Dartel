@@ -355,6 +355,11 @@ instead, because full-screen applications redraw it themselves.
   looks for a URL around the point in the logical line, and the word under
   the point is the last candidate, as a path. `opener` runs `open` or
   `xdg-open` and waits for it on a `dartel-open` thread.
+- `Term::text` copies a `Stream` selection and ends a row with `\n` unless it
+  is `wrapped`. `Term::block_text` copies a `Block` selection, takes the
+  columns of `Term::block_columns` from every row, and puts `\n` between rows.
+  Both stop a row at its last occupied cell and keep combining marks with
+  their cell.
 - `Term::word_at` and `Term::line_at` give the spans of a double click and a
   triple click. A word ends at a space, a tab, or one of
   `` " ' ` ( ) [ ] { } < > | ; , ``.
@@ -533,6 +538,12 @@ flowchart TD
   the physical key, so they do not depend on the keyboard layout.
 - A press with the shortcut modifier opens the target under the pointer. Two
   and three presses on one cell within 500 ms select a word and a line.
+- A selection is a `Selection`, either `Stream`, which follows the text from
+  one point to another, or `Block`, a rectangle. A drag that starts with Alt
+  held, which is Option on macOS, makes a `Block` whose `Span` comes from
+  `Span::block` and holds the top left and the bottom right cells.
+  `Term::block_columns` widens the columns of a row over a wide character that
+  either side cuts, and `Scene` draws one quad per row from it.
 - A settings prompt takes keys before the search prompt, and the search prompt
   takes them before the shell.
 - Mouse events are reported to the application when it enabled a mouse mode,
@@ -556,6 +567,7 @@ flowchart TD
 | Shortcut modifier | Command | Ctrl+Shift |
 | Opener for links | `open` | `xdg-open` |
 | Meta key | Left Option | Alt |
+| Rectangle selection modifier | Option | Alt |
 | Default shell without `SHELL` | `/bin/zsh` | `/bin/sh` |
 | Search workers | At most 6 | All available cores |
 
