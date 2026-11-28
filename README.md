@@ -151,9 +151,18 @@ An image is at most 4096 pixels on each side. Each tab keeps up to 256 MiB of im
 - Image ids (`i`), image numbers (`I`), placement ids (`p`), and replies with the quiet levels of `q`.
 - A placement takes a source rectangle (`x`, `y`, `w`, `h`), an offset inside the first cell (`X`, `Y`), a size in cells (`c`, `r`), and the cursor policy (`C`).
 - Delete takes the targets `a`, `c`, `f`, `i`, `n`, `p`, `q`, `r`, `x`, `y`, and `z`, and the uppercase forms also free the image data. `f` and `F` remove every frame of the image named by `i` or `I` except the root frame.
-- Data is read from the escape code only (`t=d`). Transmission through a file, a temporary file, or shared memory is not supported, and neither are Unicode placeholders (`U=1`), relative placements (`P`), the indexed formats (`f=8`, `f=16`), and feature queries (`e`). Such a command gets an error reply when it names an image.
+- Data is read from the escape code only (`t=d`). Transmission through a file, a temporary file, or shared memory is not supported, and neither are relative placements (`P`), the indexed formats (`f=8`, `f=16`), and feature queries (`e`). Such a command gets an error reply when it names an image.
 - Every image is drawn above the text. `z` does not order images, and only the delete targets read it.
 - Text written over an image leaves it in place, and so do the erase commands other than `CSI 2 J`.
+
+### kitty Unicode placeholders
+
+- `U=1` with `a=p` or `a=T` creates a virtual placement of `c` columns and `r` rows. It needs an image id, puts nothing on the screen, and leaves the cursor in place. The image is scaled into that rectangle and keeps its aspect ratio.
+- The character U+10EEEE shows one cell of a virtual placement. Its foreground color is the image id, a 256-color index or a 24-bit color, and its underline color is the placement id. Without a placement id, the newest virtual placement of the image is shown.
+- The first, second, and third combining marks from the kitty list of row and column diacritics give the row, the column, and the most significant byte of the image id. A cell whose marks are missing takes them from a placeholder cell directly to its left with the same foreground and underline colors: no marks continue its row in the next column with its high byte, a row alone continues the column on the same row, and a row and a column take its high byte when they follow its column.
+- Placeholder cells are ordinary text, so they scroll, wrap, and are erased or overwritten like other characters. Their combining marks are not drawn and are not part of copied text. A cell outside the rectangle of its placement shows nothing.
+- Delete removes virtual placements only for the targets `i`, `n`, and `r` and their uppercase forms. Sending an image again, or a placement with the same image id and placement id, removes its virtual placements, and so does dropping the image or its picture at the 256 MiB limits.
+- An animation shown through placeholders plays while one of its placeholder cells is on the screen.
 
 ### kitty animation
 

@@ -8,6 +8,7 @@ pub mod keys;
 mod modes;
 mod osc;
 mod perform;
+mod placeholder;
 mod row;
 mod screen;
 mod sgr;
@@ -19,6 +20,7 @@ pub use find::{Point, Selection, Span, Target, path_candidate};
 pub use graphics::{Picture, Tile};
 pub use grid::Grid;
 pub use modes::Modes;
+pub use placeholder::PLACEHOLDER;
 pub use row::Row;
 pub use style::{Attrs, Style, StyleId};
 

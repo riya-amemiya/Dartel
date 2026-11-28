@@ -61,12 +61,13 @@ Dartel/
 │   │   │   ├── charset.rs    # DEC special graphics
 │   │   │   ├── color.rs      # Rgb, Color, Palette, xterm 256-color table
 │   │   │   ├── find.rs       # Scrollback search, text extraction, words, link targets, prompt rows
-│   │   │   ├── graphics.rs   # Kitty graphics commands and animation, Sixel placement, pictures and tiles
+│   │   │   ├── graphics.rs   # Kitty graphics commands, animation, and virtual placements, Sixel placement, pictures and tiles
 │   │   │   ├── grid.rs       # Rows, scrollback, scrolling, resize, reflow
 │   │   │   ├── keys.rs       # Kitty keyboard protocol encoder
 │   │   │   ├── modes.rs      # Terminal mode flags
 │   │   │   ├── osc.rs        # OSC title, palette, clipboard, directory, link, and shell mark sequences
 │   │   │   ├── perform.rs    # Perform implementation, CSI, ESC, DCS, and APC dispatch
+│   │   │   ├── placeholder.rs # Unicode placeholder character, row and column diacritics, cell resolution
 │   │   │   ├── row.rs        # Row edits, wide characters, combining marks, shell marks, image tiles
 │   │   │   ├── screen.rs     # Writing, cursor movement, erase, alternate screen
 │   │   │   ├── sgr.rs        # SGR attributes and colors
@@ -280,6 +281,14 @@ Build and test for that target run on the macOS CI job.
   of the `Arc<Picture>`. The pixels of a `Picture` never change. A frame change
   of an animation builds a new `Picture` with the serial number of the old one
   and swaps it into the tiles, so `Gpu` uploads it as a new texture.
+- A virtual placement of a Unicode placeholder holds its `Picture` in
+  `Graphics::virtuals` and puts no tile on a row. The U+10EEEE cells that show
+  it are text, and `Row::combine` stores their marks without setting the
+  marked flag, so neither `Scene::compose_row` nor text extraction reads
+  them. `Scene::compose` adds their tiles after `compose_rows` for the lines
+  it rebuilt, through `Term::placeholder_tiles`, so a change to virtual
+  placements sets `damage.full`. Keep placeholder checks out of
+  `Scene::compose_row` and the write paths.
 - `Term` has no clock. `Term::animate` takes the time, shows the frames that
   are due, and returns the next deadline only for a running animation with a
   tile on the screen. It returns at once when no image has animation state,

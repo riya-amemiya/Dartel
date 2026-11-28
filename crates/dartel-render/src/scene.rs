@@ -3,8 +3,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use dartel_term::{
-    Attrs, Cell, Color, CursorShape, Modes, Palette, Picture, Rgb, Selection, Span, Style, Term,
-    Tile,
+    Attrs, Cell, Color, CursorShape, Modes, PLACEHOLDER, Palette, Picture, Rgb, Selection, Span,
+    Style, Term, Tile,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -788,7 +788,9 @@ impl Scene {
                 ..Glyph::default()
             });
         }
-        let raster = self.fonts.rasterize(c, face);
+        let raster = (c != PLACEHOLDER)
+            .then(|| self.fonts.rasterize(c, face))
+            .flatten();
         self.store(raster)
     }
 
@@ -924,6 +926,9 @@ impl Scene {
             self.rows.resize_with(term.lines(), Row::default);
             self.compose_rows(term);
             self.ligate_rows(term);
+        }
+        if term.has_virtual_placements() {
+            self.compose_placeholders(term);
         }
         self.stale = false;
         self.quads.clear();
@@ -1065,6 +1070,31 @@ impl Scene {
                 }
                 pen += advance;
             }
+        }
+    }
+
+    #[cold]
+    fn compose_placeholders(&mut self, term: &Term) {
+        let metrics = self.fonts.metrics();
+        let (width, height) = (metrics.width as i32, metrics.height as i32);
+        let (padding, top) = (self.padding, self.top());
+        for line in 0..term.lines() {
+            if !(self.stale || term.damage().line(line)) {
+                continue;
+            }
+            let origin = top + line as i32 * height;
+            self.rows[line]
+                .pictures
+                .extend(term.placeholder_tiles(line).iter().map(|tile| {
+                    (
+                        Arc::clone(&tile.picture),
+                        pictured(
+                            tile,
+                            [padding + i32::from(tile.column) * width, origin],
+                            [width, height],
+                        ),
+                    )
+                }));
         }
     }
 
