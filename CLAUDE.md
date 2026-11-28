@@ -296,7 +296,9 @@ Build and test for that target run on the macOS CI job.
   and the window calls it for the active tab on every frame.
 - The counts in `Scene::layers` add up to the length of `Scene::quads`. The
   texture rectangle of a `Quad` has a size, and a size of zero means a solid
-  quad.
+  quad. A frame can have no quad, such as a cleared screen with a hidden
+  cursor, and `Gpu::draw` then only clears the surface, because wgpu panics
+  when `set_vertex_buffer` gets an empty slice.
 - `Scene::compose` takes no `Gpu`. The pixels of a new glyph wait in `Scene`,
   and `Scene::flush` uploads them to the atlas. The window calls it after
   `Scene::compose` and before `Gpu::draw`, because a glyph that was not

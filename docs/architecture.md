@@ -781,7 +781,9 @@ flowchart TD
   quads. A frame appends them after the glyphs, ordered by serial number, and
   lists the quads as layers: the text, one layer for each run of quads that
   share a `Picture`, and the overlays. `Gpu::draw` binds the atlas or the
-  texture of the picture for each layer and draws its range of instances.
+  texture of the picture for each layer and draws its range of instances. A
+  frame without quads, such as a cleared screen with a hidden cursor, only
+  clears the surface, because wgpu panics on an empty vertex buffer slice.
 - `Gpu` creates the texture of a `Picture` when a frame first uses it. The key
   is the address of the `Arc<Picture>`, because serial numbers repeat across
   tabs. A texture is dropped when its `Picture` is gone, or when the textures
