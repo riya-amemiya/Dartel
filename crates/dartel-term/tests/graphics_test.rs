@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use dartel_term::{Term, Tile};
+use dartel_term::{PLACEHOLDER, Term, Tile};
 use dartel_vt::Parser;
 
 const COLOR: [u8; 3] = [200, 100, 50];
@@ -18,6 +18,7 @@ const PNG: &[u8] = &[
 ];
 const PNG_PIXELS: [u8; 16] = [255, 0, 0, 255, 0, 128, 0, 128, 0, 0, 0, 0, 64, 64, 64, 64];
 const MISSING: &str = "ENOENT:no image with this id";
+const DIGITS: [char; 3] = ['\u{305}', '\u{30D}', '\u{30E}'];
 
 fn term(lines: usize, cols: usize) -> Term {
     let mut term = Term::new(lines, cols, 100);
@@ -215,6 +216,36 @@ fn played(controls: &[&str], times: &[u64]) -> Vec<u8> {
     }
     run(&mut term, Instant::now(), times);
     shown(&term)
+}
+
+fn placeholder(numbers: &[usize]) -> String {
+    std::iter::once(PLACEHOLDER)
+        .chain(numbers.iter().map(|&number| DIGITS[number]))
+        .collect()
+}
+
+fn hollow(control: &str, text: &str) -> Term {
+    fed(
+        6,
+        8,
+        &[
+            &solid(&format!("a=T,U=1,q=2,{control}"), 10, 10),
+            text.as_bytes(),
+        ],
+    )
+}
+
+fn seated(term: &Term, line: usize) -> Vec<(u16, u32, u32)> {
+    term.placeholder_tiles(line)
+        .iter()
+        .map(|tile| (tile.column, tile.x, tile.y))
+        .collect()
+}
+
+fn erased(control: &str) -> bool {
+    let mut term = hollow("i=1,c=2,r=2", "");
+    feed(&mut term, &order(control));
+    term.has_virtual_placements()
 }
 
 fn jumped(term: &mut Term, frame: u32) -> Vec<u8> {
@@ -1231,11 +1262,405 @@ fn sending_an_image_id_again_removes_its_placements() {
 }
 
 #[test]
-fn unicode_placeholder_placement_is_rejected() {
-    assert_eq!(
-        answered(&[&solid("a=T,i=1,U=1", 1, 1)]),
-        answer(1, "EINVAL:unsupported placement")
+fn unicode_placeholder_placement_is_acknowledged() {
+    assert_eq!(answered(&[&solid("a=T,i=1,U=1", 1, 1)]), answer(1, "OK"));
+}
+
+#[test]
+fn virtual_placement_leaves_the_cursor_in_place() {
+    assert_eq!(cursor(&hollow("i=1,c=2,r=2", "")), (0, 0));
+}
+
+#[test]
+fn virtual_placement_puts_no_tile_on_the_rows() {
+    assert_eq!(counts(&hollow("i=1,c=2,r=2", "")), [0; 6]);
+}
+
+#[test]
+fn virtual_placement_fits_the_image_into_its_cells() {
+    let term = hollow(
+        "i=1,c=3,r=1",
+        &format!("\x1b[38;5;1m{}", placeholder(&[0, 0])),
     );
+    let picture = &term.placeholder_tiles(0)[0].picture;
+    assert_eq!((picture.width, picture.height), (30, 20));
+}
+
+#[test]
+fn put_with_the_unicode_flag_creates_a_virtual_placement() {
+    let term = fed(
+        6,
+        8,
+        &[
+            &solid("a=t,i=1,q=2", 10, 10),
+            &order("a=p,U=1,i=1,c=2,r=2,q=2"),
+            format!("\x1b[38;5;1m{}", placeholder(&[0, 0])).as_bytes(),
+        ],
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 0)]);
+}
+
+#[test]
+fn placeholder_takes_the_image_id_from_a_256_color_foreground() {
+    let term = hollow(
+        "i=42,c=2,r=2",
+        &format!("\x1b[38;5;42m{}", placeholder(&[0, 0])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 0)]);
+}
+
+#[test]
+fn placeholder_takes_the_image_id_from_a_24_bit_foreground() {
+    let term = hollow(
+        "i=66051,c=2,r=2",
+        &format!("\x1b[38;2;1;2;3m{}", placeholder(&[0, 0])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 0)]);
+}
+
+#[test]
+fn placeholder_of_another_image_id_shows_nothing() {
+    let term = hollow(
+        "i=42,c=2,r=2",
+        &format!("\x1b[38;5;41m{}", placeholder(&[0, 0])),
+    );
+    assert_eq!(seated(&term, 0), []);
+}
+
+#[test]
+fn third_diacritic_gives_the_most_significant_byte_of_the_image_id() {
+    let term = hollow(
+        "i=33554474,c=2,r=2",
+        &format!("\x1b[38;5;42m{}", placeholder(&[0, 0, 2])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 0)]);
+}
+
+#[test]
+fn underline_color_selects_the_placement() {
+    let mut term = hollow("i=1,p=1,c=1,r=1", "");
+    feed(&mut term, &order("a=p,U=1,i=1,p=2,c=2,r=1,q=2"));
+    feed(
+        &mut term,
+        format!("\x1b[38;5;1;58;5;1m{}", placeholder(&[0, 0])).as_bytes(),
+    );
+    assert_eq!(term.placeholder_tiles(0)[0].picture.width, 10);
+}
+
+#[test]
+fn placeholder_without_an_underline_color_uses_the_newest_placement() {
+    let mut term = hollow("i=1,p=1,c=1,r=1", "");
+    feed(&mut term, &order("a=p,U=1,i=1,p=2,c=2,r=1,q=2"));
+    feed(
+        &mut term,
+        format!("\x1b[38;5;1m{}", placeholder(&[0, 0])).as_bytes(),
+    );
+    assert_eq!(term.placeholder_tiles(0)[0].picture.width, 20);
+}
+
+#[test]
+fn underline_color_of_an_unknown_placement_shows_nothing() {
+    let term = hollow(
+        "i=1,p=1,c=2,r=2",
+        &format!("\x1b[38;5;1;58;5;9m{}", placeholder(&[0, 0])),
+    );
+    assert_eq!(seated(&term, 0), []);
+}
+
+#[test]
+fn row_and_column_diacritics_pick_the_cell_of_the_image() {
+    let term = hollow(
+        "i=42,c=2,r=2",
+        &format!(
+            "\x1b[38;5;42m{}{}\r\n{}{}",
+            placeholder(&[0, 0]),
+            placeholder(&[0, 1]),
+            placeholder(&[1, 0]),
+            placeholder(&[1, 1])
+        ),
+    );
+    assert_eq!(
+        [seated(&term, 0), seated(&term, 1)],
+        [[(0, 0, 0), (1, 10, 0)], [(0, 0, 20), (1, 10, 20)]]
+    );
+}
+
+#[test]
+fn placeholder_without_diacritics_continues_the_cell_to_its_left() {
+    let term = hollow(
+        "i=1,c=3,r=1",
+        &format!("\x1b[38;5;1m{}{}", placeholder(&[0, 1]), placeholder(&[])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 10, 0), (1, 20, 0)]);
+}
+
+#[test]
+fn placeholder_with_only_a_row_takes_the_next_column() {
+    let term = hollow(
+        "i=1,c=2,r=2",
+        &format!("\x1b[38;5;1m{}{}", placeholder(&[1, 0]), placeholder(&[1])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 20), (1, 10, 20)]);
+}
+
+#[test]
+fn placeholder_with_only_a_row_starts_over_on_another_row() {
+    let term = hollow(
+        "i=1,c=2,r=2",
+        &format!("\x1b[38;5;1m{}{}", placeholder(&[0, 1]), placeholder(&[1])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 10, 0), (1, 0, 20)]);
+}
+
+#[test]
+fn placeholder_with_a_row_and_a_column_keeps_the_high_byte_of_its_left_cell() {
+    let term = hollow(
+        "i=33554474,c=2,r=1",
+        &format!(
+            "\x1b[38;5;42m{}{}",
+            placeholder(&[0, 0, 2]),
+            placeholder(&[0, 1])
+        ),
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 0), (1, 10, 0)]);
+}
+
+#[test]
+fn placeholder_with_a_row_and_a_column_apart_from_its_left_cell_drops_the_high_byte() {
+    let term = hollow(
+        "i=33554474,c=3,r=1",
+        &format!(
+            "\x1b[38;5;42m{}{}",
+            placeholder(&[0, 0, 2]),
+            placeholder(&[0, 2])
+        ),
+    );
+    assert_eq!(seated(&term, 0), [(0, 0, 0)]);
+}
+
+#[test]
+fn row_diacritics_alone_fill_a_placement_of_two_rows_and_three_columns() {
+    let term = hollow(
+        "i=42,c=3,r=2",
+        &format!(
+            "\x1b[38;5;42m{0}{1}{1}\r\n{2}{1}{1}",
+            placeholder(&[0]),
+            placeholder(&[]),
+            placeholder(&[1])
+        ),
+    );
+    assert_eq!(
+        [seated(&term, 0), seated(&term, 1)],
+        [
+            [(0, 0, 0), (1, 10, 0), (2, 20, 0)],
+            [(0, 0, 20), (1, 10, 20), (2, 20, 20)]
+        ]
+    );
+}
+
+#[test]
+fn placeholder_outside_the_placement_shows_nothing() {
+    let term = hollow(
+        "i=1,c=1,r=1",
+        &format!("\x1b[38;5;1m{}", placeholder(&[0, 1])),
+    );
+    assert_eq!(seated(&term, 0), []);
+}
+
+#[test]
+fn placeholder_does_not_continue_a_cell_of_another_color() {
+    let mut term = hollow("i=42,c=2,r=1", "");
+    feed(&mut term, &solid("a=T,U=1,q=2,i=43,c=2,r=1", 10, 10));
+    feed(
+        &mut term,
+        format!(
+            "\x1b[38;5;42m{}\x1b[38;5;43m{}",
+            placeholder(&[0, 1]),
+            placeholder(&[])
+        )
+        .as_bytes(),
+    );
+    assert_eq!(seated(&term, 0), [(0, 10, 0), (1, 0, 0)]);
+}
+
+#[test]
+fn placeholder_does_not_continue_a_cell_past_other_text() {
+    let term = hollow(
+        "i=1,c=3,r=1",
+        &format!("\x1b[38;5;1m{}x{}", placeholder(&[0, 1]), placeholder(&[])),
+    );
+    assert_eq!(seated(&term, 0), [(0, 10, 0), (2, 0, 0)]);
+}
+
+#[test]
+fn placeholder_keeps_its_diacritics_without_drawing_them() {
+    let term = hollow("i=1,c=2,r=2", &placeholder(&[0, 1]));
+    let row = term.grid().row(0);
+    assert_eq!(
+        (row.cells()[0].is_marked(), row.marks(0).count()),
+        (false, 2)
+    );
+}
+
+#[test]
+fn placeholder_text_moves_the_cursor_one_cell_each() {
+    let term = hollow("i=1,c=2,r=2", &placeholder(&[0, 0]).repeat(2));
+    assert_eq!(cursor(&term), (0, 2));
+}
+
+#[test]
+fn writing_over_a_placeholder_removes_its_image_cell() {
+    let term = hollow(
+        "i=1,c=2,r=2",
+        &format!(
+            "\x1b[38;5;1m{}{}\rx",
+            placeholder(&[0, 0]),
+            placeholder(&[0, 1])
+        ),
+    );
+    assert_eq!(seated(&term, 0), [(1, 10, 0)]);
+}
+
+#[test]
+fn placeholder_scrolled_into_the_history_shows_its_image_cell() {
+    let mut term = hollow(
+        "i=1,c=2,r=2",
+        &format!("\x1b[38;5;1m{}\r\n\n\n\n\n\n", placeholder(&[0, 0])),
+    );
+    term.scroll_display(6);
+    assert_eq!(seated(&term, 0), [(0, 0, 0)]);
+}
+
+#[test]
+fn virtual_placement_marks_the_whole_screen() {
+    let mut term = term(6, 8);
+    term.reset_damage();
+    feed(&mut term, &solid("a=T,U=1,q=2,i=1,c=2,r=2", 10, 10));
+    assert!(term.damage().is_full());
+}
+
+#[test]
+fn delete_by_id_removes_a_virtual_placement() {
+    assert!(!erased("a=d,d=i,i=1"));
+}
+
+#[test]
+fn uppercase_delete_by_id_removes_a_virtual_placement() {
+    assert!(!erased("a=d,d=I,i=1"));
+}
+
+#[test]
+fn delete_by_id_range_removes_a_virtual_placement() {
+    assert!(!erased("a=d,d=r,x=1,y=3"));
+}
+
+#[test]
+fn delete_by_an_id_range_around_another_image_keeps_a_virtual_placement() {
+    assert!(erased("a=d,d=R,x=2,y=3"));
+}
+
+#[test]
+fn delete_by_number_removes_a_virtual_placement() {
+    let mut term = fed(6, 8, &[&solid("a=T,U=1,q=2,I=7,c=1,r=1", 10, 10)]);
+    feed(&mut term, &order("a=d,d=n,I=7"));
+    assert!(!term.has_virtual_placements());
+}
+
+#[test]
+fn delete_by_id_and_placement_keeps_the_other_virtual_placement() {
+    let mut term = hollow("i=1,p=1,c=1,r=1", "");
+    feed(&mut term, &order("a=p,U=1,i=1,p=2,c=2,r=1,q=2"));
+    feed(&mut term, &order("a=d,d=i,i=1,p=2"));
+    feed(
+        &mut term,
+        format!("\x1b[38;5;1m{}", placeholder(&[0, 0])).as_bytes(),
+    );
+    assert_eq!(term.placeholder_tiles(0)[0].picture.width, 10);
+}
+
+#[test]
+fn deletes_by_position_depth_or_frame_keep_virtual_placements() {
+    let kept: Vec<bool> = "aAcCpPqQxXyYzZfF"
+        .chars()
+        .map(|kind| erased(&format!("a=d,d={kind},x=1,y=1")))
+        .collect();
+    assert_eq!(kept, [true; 16]);
+}
+
+#[test]
+fn uppercase_delete_keeps_the_image_of_a_remaining_virtual_placement() {
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &solid("a=T,i=1,q=2", 10, 20),
+            &order("a=p,U=1,i=1,c=1,r=1,q=2"),
+            &order("a=d,d=A"),
+        ],
+    );
+    assert!(kept(&mut term, 1));
+}
+
+#[test]
+fn sending_the_image_again_removes_its_virtual_placements() {
+    let mut term = hollow("i=1,c=2,r=2", "");
+    feed(&mut term, &solid("a=t,i=1,q=2", 10, 10));
+    assert!(!term.has_virtual_placements());
+}
+
+#[test]
+fn virtual_placement_replaces_a_displayed_one_with_the_same_placement_id() {
+    let term = fed(
+        6,
+        8,
+        &[
+            &solid("a=T,i=1,p=3,q=2", 10, 20),
+            &order("a=p,U=1,i=1,p=3,c=1,r=1,q=2"),
+        ],
+    );
+    assert_eq!(counts(&term), [0; 6]);
+}
+
+#[test]
+fn displayed_placement_with_the_same_placement_id_replaces_a_virtual_one() {
+    let mut term = hollow("i=1,p=3,c=2,r=1", "");
+    feed(&mut term, &order("a=p,i=1,p=3,q=2"));
+    assert!(!term.has_virtual_placements());
+}
+
+#[test]
+fn frame_change_reaches_a_virtual_placement() {
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=T,U=1,i=1,c=1,r=1,q=2", RED),
+            &pixel("a=f,i=1,q=1", GREEN),
+            format!("\x1b[38;5;1m{}", placeholder(&[0, 0])).as_bytes(),
+        ],
+    );
+    feed(&mut term, &order("a=a,i=1,c=2,q=1"));
+    term.animate(Instant::now());
+    let start = (10 * 10 + 5) * 4;
+    assert_eq!(
+        term.placeholder_tiles(0)[0].picture.pixels[start..start + 4],
+        GREEN
+    );
+}
+
+#[test]
+fn animation_shown_through_a_placeholder_reports_its_next_change() {
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=T,U=1,i=1,c=1,r=1,q=2", RED),
+            &pixel("a=f,i=1,q=1", GREEN),
+            &order("a=a,i=1,r=1,z=100,s=3,q=1"),
+            format!("\x1b[38;5;1m{}", placeholder(&[0, 0])).as_bytes(),
+        ],
+    );
+    assert!(term.animate(Instant::now()).is_some());
 }
 
 #[test]

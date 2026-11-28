@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use dartel_image::{Image, MAX_SIDE, base64, inflate, png, sixel};
 
+use super::placeholder::{self, Seat};
 use super::{Row, Term};
 
 const QUOTA: usize = 256 << 20;
@@ -61,6 +62,14 @@ impl Tile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Anchor {
+    #[default]
+    Cursor,
+    Placeholder,
+    Relative,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Command {
     action: u8,
@@ -82,7 +91,7 @@ struct Command {
     columns: u32,
     rows: u32,
     stay: bool,
-    detached: bool,
+    anchor: Anchor,
     delete: u8,
     depth: i64,
 }
@@ -127,7 +136,10 @@ impl Command {
                 b'c' => command.columns = count,
                 b'r' => command.rows = count,
                 b'C' => command.stay = count == 1,
-                b'U' | b'P' => command.detached |= count != 0,
+                b'U' if count != 0 && command.anchor == Anchor::Cursor => {
+                    command.anchor = Anchor::Placeholder;
+                }
+                b'P' if count != 0 => command.anchor = Anchor::Relative,
                 b'd' => command.delete = letter,
                 b'z' => command.depth = number,
                 _ => {}
@@ -145,6 +157,38 @@ struct Spot {
     image: u32,
     placement: u32,
     fragile: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Virtual {
+    image: u32,
+    placement: u32,
+    picture: Arc<Picture>,
+    cell: [u16; 2],
+}
+
+impl Virtual {
+    fn tile(&self, seat: &Seat) -> Option<Tile> {
+        let [cell_w, cell_h] = self.cell.map(u32::from);
+        let (x, y) = (
+            seat.column.checked_mul(cell_w)?,
+            seat.line.checked_mul(cell_h)?,
+        );
+        (x < self.picture.width && y < self.picture.height).then(|| Tile {
+            picture: Arc::clone(&self.picture),
+            column: seat.at as u16,
+            left: 0,
+            top: 0,
+            x,
+            y,
+            width: cell_w.min(self.picture.width - x),
+            height: cell_h.min(self.picture.height - y),
+            cell: self.cell,
+            image: self.image,
+            placement: self.placement,
+            fragile: false,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -295,6 +339,7 @@ pub(super) struct Graphics {
     numbers: HashMap<u32, u32>,
     animations: HashMap<u32, Animation>,
     showings: HashMap<u32, Vec<Showing>>,
+    virtuals: Vec<Virtual>,
     upload: Option<(Command, Option<Vec<u8>>)>,
     sixel: Option<(bool, Vec<u8>)>,
     placed: Vec<Weak<Picture>>,
@@ -317,6 +362,7 @@ impl Graphics {
             numbers: HashMap::new(),
             animations: HashMap::new(),
             showings: HashMap::new(),
+            virtuals: Vec::new(),
             upload: None,
             sixel: None,
             placed: Vec::new(),
@@ -342,7 +388,8 @@ impl Graphics {
         }
     }
 
-    fn trim_images(&mut self, quota: usize) {
+    fn trim_images(&mut self, quota: usize) -> bool {
+        let count = self.virtuals.len();
         while self.order.len() > 1
             && self
                 .images
@@ -357,8 +404,10 @@ impl Graphics {
                 self.animations.remove(&oldest);
                 self.showings.remove(&oldest);
                 self.numbers.retain(|_, held| *held != oldest);
+                self.virtuals.retain(|held| held.image != oldest);
             }
         }
+        self.virtuals.len() != count
     }
 
     fn frame(&self, id: u32, index: usize) -> Option<Arc<Image>> {
@@ -436,6 +485,45 @@ fn load(command: &Command, bytes: Option<Vec<u8>>) -> Result<Image, &'static str
         _ => png::decode(&bytes),
     }
     .ok_or("EINVAL:the image data is malformed")
+}
+
+fn fitted(
+    command: &Command,
+    image: &Image,
+    [cell_w, cell_h]: [u32; 2],
+) -> Result<(Showing, [u32; 2]), &'static str> {
+    let (x, y) = (command.x.min(image.width), command.y.min(image.height));
+    let span = |wanted: u32, room: u32| if wanted == 0 { room } else { wanted.min(room) };
+    let (w, h) = (
+        span(command.w, image.width - x),
+        span(command.h, image.height - y),
+    );
+    if w == 0 || h == 0 {
+        return Err("EINVAL:the source rectangle is outside the image");
+    }
+    let columns = command.columns.min(MAX_SIDE / cell_w);
+    let rows = command.rows.min(MAX_SIDE / cell_h);
+    let fit = |along: u32, from: u32, across: u32| {
+        ((u64::from(along) * u64::from(across) / u64::from(from)) as u32).clamp(1, MAX_SIDE)
+    };
+    let (area, inner) = match (columns * cell_w, rows * cell_h) {
+        (0, 0) => ([w, h], [w, h]),
+        (across, 0) => ([across, fit(across, w, h)], [across, fit(across, w, h)]),
+        (0, down) => ([fit(down, h, w), down], [fit(down, h, w), down]),
+        (across, down) if u64::from(across) * u64::from(h) <= u64::from(down) * u64::from(w) => {
+            ([across, down], [across, fit(across, w, h).min(down)])
+        }
+        (across, down) => ([across, down], [fit(down, h, w).min(across), down]),
+    };
+    Ok((
+        Showing {
+            picture: Weak::new(),
+            source: [x, y, w, h],
+            inner,
+            area,
+        },
+        [columns, rows],
+    ))
 }
 
 fn framed(pixels: &[u8], inner: [u32; 2], outer: [u32; 2]) -> Vec<u8> {
@@ -725,7 +813,7 @@ impl Term {
         });
         self.graphics.order.retain(|&held| held != id);
         self.graphics.order.push_back(id);
-        self.graphics.trim_images(QUOTA);
+        self.damage.full |= self.graphics.trim_images(QUOTA);
         Ok(())
     }
 
@@ -829,13 +917,48 @@ impl Term {
             return None;
         }
         let visible: HashSet<u32> = (0..self.lines())
-            .flat_map(|line| self.visible_row(line).tiles())
-            .map(|tile| tile.image)
+            .flat_map(|line| {
+                self.visible_row(line)
+                    .tiles()
+                    .iter()
+                    .map(|tile| tile.image)
+                    .chain(
+                        self.placeholder_tiles(line)
+                            .into_iter()
+                            .map(|tile| tile.image),
+                    )
+            })
             .collect();
         visible
             .into_iter()
             .filter_map(|id| self.step(id, now))
             .min()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn has_virtual_placements(&self) -> bool {
+        !self.graphics.virtuals.is_empty()
+    }
+
+    #[must_use]
+    pub fn placeholder_tiles(&self, line: usize) -> Vec<Tile> {
+        if self.graphics.virtuals.is_empty() {
+            return Vec::new();
+        }
+        placeholder::seats(self.visible_row(line), |id| self.style(id))
+            .filter_map(|seat| {
+                self.graphics
+                    .virtuals
+                    .iter()
+                    .rev()
+                    .find(|held| {
+                        held.image == seat.image
+                            && (seat.placement == 0 || held.placement == seat.placement)
+                    })?
+                    .tile(&seat)
+            })
+            .collect()
     }
 
     fn step(&mut self, id: u32, now: Instant) -> Option<Instant> {
@@ -877,6 +1000,15 @@ impl Term {
                 .find(|held| held.as_ptr() == Arc::as_ptr(old))
             {
                 *held = Arc::downgrade(new);
+            }
+        }
+        for held in &mut self.graphics.virtuals {
+            if let Some((_, new)) = swaps
+                .iter()
+                .find(|(old, _)| Arc::ptr_eq(old, &held.picture))
+            {
+                held.picture = Arc::clone(new);
+                self.damage.full = true;
             }
         }
         let top = self.grid.history() - self.display_offset;
@@ -947,7 +1079,7 @@ impl Term {
         }
         self.graphics.images.insert(id, Arc::clone(image));
         self.graphics.order.push_back(id);
-        self.graphics.trim_images(QUOTA);
+        self.damage.full |= self.graphics.trim_images(QUOTA);
         id
     }
 
@@ -957,6 +1089,7 @@ impl Term {
             self.graphics.numbers.retain(|_, held| *held != id);
             self.graphics.animations.remove(&id);
             self.graphics.showings.remove(&id);
+            self.graphics.virtuals.retain(|held| held.image != id);
             self.strip(|tile| tile.image == id);
         }
     }
@@ -971,47 +1104,25 @@ impl Term {
     }
 
     fn place(&mut self, command: &Command, id: u32, image: &Image) -> Result<(), &'static str> {
-        if command.detached {
+        if command.anchor == Anchor::Relative {
             return Err("EINVAL:unsupported placement");
         }
-        let [cell_w, cell_h] = self.graphics.cell.map(u32::from);
-        let (x, y) = (command.x.min(image.width), command.y.min(image.height));
-        let span = |wanted: u32, room: u32| if wanted == 0 { room } else { wanted.min(room) };
-        let (w, h) = (
-            span(command.w, image.width - x),
-            span(command.h, image.height - y),
-        );
-        if w == 0 || h == 0 {
-            return Err("EINVAL:the source rectangle is outside the image");
+        if command.anchor == Anchor::Placeholder && id == 0 {
+            return Err("EINVAL:a virtual placement needs an image id");
         }
-        let columns = command.columns.min(MAX_SIDE / cell_w);
-        let rows = command.rows.min(MAX_SIDE / cell_h);
-        let fit = |along: u32, from: u32, across: u32| {
-            ((u64::from(along) * u64::from(across) / u64::from(from)) as u32).clamp(1, MAX_SIDE)
-        };
-        let (area, inner) = match (columns * cell_w, rows * cell_h) {
-            (0, 0) => ([w, h], [w, h]),
-            (across, 0) => ([across, fit(across, w, h)], [across, fit(across, w, h)]),
-            (0, down) => ([fit(down, h, w), down], [fit(down, h, w), down]),
-            (across, down)
-                if u64::from(across) * u64::from(h) <= u64::from(down) * u64::from(w) =>
-            {
-                ([across, down], [across, fit(across, w, h).min(down)])
-            }
-            (across, down) => ([across, down], [fit(down, h, w).min(across), down]),
-        };
-        let showing = Showing {
-            picture: Weak::new(),
-            source: [x, y, w, h],
-            inner,
-            area,
-        };
+        let cell = self.graphics.cell;
+        let [cell_w, cell_h] = cell.map(u32::from);
+        let (showing, [columns, rows]) = fitted(command, image, [cell_w, cell_h])?;
+        let area = showing.area;
         let (left, top) = (
             command.offset[0].min(cell_w - 1),
             command.offset[1].min(cell_h - 1),
         );
         if id != 0 && command.placement != 0 {
             self.strip(|tile| tile.image == id && tile.placement == command.placement);
+            self.graphics
+                .virtuals
+                .retain(|held| held.image != id || held.placement != command.placement);
         }
         let picture = self.picture(area[0], area[1], showing.render(image));
         if id != 0 {
@@ -1021,6 +1132,16 @@ impl Term {
                 picture: Arc::downgrade(&picture),
                 ..showing
             });
+        }
+        if command.anchor == Anchor::Placeholder {
+            self.graphics.virtuals.push(Virtual {
+                image: id,
+                placement: command.placement,
+                picture,
+                cell,
+            });
+            self.damage.full = true;
+            return Ok(());
         }
         self.lay(
             &Spot {
@@ -1066,6 +1187,9 @@ impl Term {
         self.graphics.placed.push(Arc::downgrade(&picture));
         let dropped = self.graphics.trim_pictures(QUOTA);
         if !dropped.is_empty() {
+            self.graphics
+                .virtuals
+                .retain(|held| !dropped.contains(&held.picture.serial));
             self.strip(|tile| dropped.contains(&tile.picture.serial));
         }
         picture
@@ -1170,12 +1294,16 @@ impl Term {
             b'r' => image != 0 && (command.x..=command.y).contains(&image),
             _ => false,
         };
+        let chosen = |image: u32, placement: u32| {
+            named(image) && (command.placement == 0 || placement == command.placement)
+        };
         let doomed = |tile: &Tile| {
             !tile.fragile
-                && (hit.contains(&tile.picture.serial)
-                    || (named(tile.image)
-                        && (command.placement == 0 || tile.placement == command.placement)))
+                && (hit.contains(&tile.picture.serial) || chosen(tile.image, tile.placement))
         };
+        self.graphics
+            .virtuals
+            .retain(|held| !chosen(held.image, held.placement));
         let mut freed: HashSet<u32> = if command.delete.is_ascii_uppercase() {
             self.grid
                 .rows()
@@ -1195,13 +1323,15 @@ impl Term {
             HashSet::new()
         };
         self.strip(doomed);
-        for tile in self
+        for image in self
             .grid
             .rows()
             .chain(self.inactive.rows())
             .flat_map(Row::tiles)
+            .map(|tile| tile.image)
+            .chain(self.graphics.virtuals.iter().map(|held| held.image))
         {
-            freed.remove(&tile.image);
+            freed.remove(&image);
         }
         self.graphics
             .images

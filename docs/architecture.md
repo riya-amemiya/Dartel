@@ -37,7 +37,7 @@ flowchart TD
 | `dartel-vt` | `lib`, `params`, `utf8`, `scan` | VT state machine that calls a `Perform` implementation, and the length of the leading run of printable ASCII with NEON, SSE2, and scalar implementations |
 | `dartel-search` | `lib` | Literal and regex search over a byte buffer, and the URL around a byte offset |
 | `dartel-image` | `lib`, `base64`, `inflate`, `png`, `sixel`, `scale` | Base64, zlib, PNG, and Sixel decoding into RGBA pixels, and scaling into premultiplied pixels |
-| `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `graphics`, `keys`, `modes`, `charset` | Screen, scrollback, styles, modes, images, the kitty keyboard encoding, and the `Perform` implementation |
+| `dartel-term` | `lib`, `cell`, `grid`, `row`, `screen`, `perform`, `sgr`, `osc`, `style`, `color`, `find`, `graphics`, `placeholder`, `keys`, `modes`, `charset` | Screen, scrollback, styles, modes, images, Unicode placeholders, the kitty keyboard encoding, and the `Perform` implementation |
 | `dartel-pty` | `lib` | PTY allocation, login shell spawn in a start directory, resize, hangup, and the host name |
 | `dartel-config` | `lib`, `toml` | Settings, the TOML parser, the saved state, and the file locations |
 | `dartel-render` | `scene`, `font`, `gpu` | Conversion of terminal rows into quads, the tab bar, the glyph cache, ligatures, font discovery, shaping, and rasterization, the wgpu surface, the picture textures, and the draw calls |
@@ -565,11 +565,72 @@ flowchart TD
 - Replies to graphics commands and to `CSI 14 t` and `CSI 16 t` go through the
   reply buffer that other queries use. The window sets the cell size with
   `Term::set_cell_size`.
-- Unicode placeholders, relative placements, the indexed formats, feature
-  queries, and transmission through files or shared memory are refused, with
-  an `EINVAL` reply when the command names an image. `umt_from_base64` returns
-  a UTF-8 string, so image payloads are decoded by `dartel_image::base64`
-  instead.
+- Relative placements, the indexed formats, feature queries, and transmission
+  through files or shared memory are refused, with an `EINVAL` reply when the
+  command names an image. `umt_from_base64` returns a UTF-8 string, so image
+  payloads are decoded by `dartel_image::base64` instead.
+
+### Unicode placeholders
+
+A virtual placement holds a `Picture` and puts no tile on any row. The cells
+that show it are ordinary text, the character U+10EEEE with its colors and
+combining marks, so the edits, the erases, the scrolling, and the reflow of
+text move and drop them without any graphics code. `Scene` asks `Term` for
+the tiles of those cells when it rebuilds a line.
+
+```mermaid
+flowchart TD
+    create["a=p or a=T with U=1"] --> fit["Scale the image into c by r cells"]
+    fit --> keep["Keep a Virtual with the image id, the placement id, the Picture, and the cell size"]
+    text["U+10EEEE and its marks, written as text"] --> row["Cells and marks of a Row"]
+    compose["Scene compose, after compose_rows"] --> any{"Term has a virtual placement"}
+    any -- no --> done["Return"]
+    any -- yes --> lines["Each line that compose_rows rebuilt"]
+    lines --> walk["placeholder seats walks the cells from left to right"]
+    row --> walk
+    walk --> find["Newest Virtual with the image id and the placement id"]
+    keep --> find
+    find --> tile["One Tile of one cell from its Picture"]
+    tile --> quads["Picture quads of the line in Scene"]
+```
+
+- `Graphics::virtuals` holds the virtual placements in the order they were
+  made. A `Virtual` keeps a strong reference to its `Picture`, which counts
+  toward the 256 MiB of displayed pictures and records a `Showing`, so the
+  frames of an animation and the quota reach it as they reach a placement on
+  the rows.
+- `Row::combine` keeps the marks of a placeholder cell in `Extras` and leaves
+  the marked flag of the cell clear. `Scene::compose_row` draws marks only for
+  a marked cell, and `Term::text` and `Term::search` read them only for a
+  marked cell, so the marks of a placeholder are neither drawn nor copied.
+  `Scene::rasterize` gives U+10EEEE an empty glyph without a font lookup, and
+  the glyph cache keeps it like any other.
+- `placeholder::seats` reads the cells up to `Row::used` once. It collects
+  the first three marks of every cell from `Extras`, maps each through the
+  diacritic table to a number, and keeps the row, the column, the most
+  significant byte, and the foreground and underline colors of the previous
+  placeholder cell. A cell that is not a placeholder clears that state. The
+  low 24 bits of the foreground color and the most significant byte make the
+  image id, and the low 24 bits of the underline color are the placement id.
+- A cell without marks takes the row, the next column, and the high byte of a
+  previous cell with the same two colors. A cell with a row alone takes the
+  next column and the high byte when the row matches too, and a cell with a
+  row and a column takes the high byte when the column follows the previous
+  one. Otherwise the missing values are zero.
+- A cell whose rectangle lies outside the `Picture` of its placement, or whose
+  image has no virtual placement, gives no tile.
+- `Term::placeholder_tiles` returns at once when there is no virtual
+  placement, so `Scene::compose` pays one check for terminals without them.
+  Creating, replacing, and deleting a virtual placement set `damage.full`, and
+  a frame change of its image sets it too, because any line can hold its
+  cells.
+- `a=d` removes virtual placements only for `i`, `n`, and `r` and their
+  uppercase forms. An uppercase delete keeps the image data while a virtual
+  placement of the image remains. Sending the image again, a placement with
+  the same image and placement ids, dropping the image at the quota, and
+  dropping its `Picture` at the quota of displayed pictures remove it.
+- `Term::animate` counts an image as visible when a placeholder cell on the
+  screen shows it, so an animation seen only through placeholders plays.
 
 ### Animation
 

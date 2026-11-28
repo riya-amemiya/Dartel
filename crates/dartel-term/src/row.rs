@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use super::cell::Cell;
 use super::graphics::Tile;
+use super::placeholder::PLACEHOLDER;
 use super::style::StyleId;
 
 const MAX_MARKS: usize = 8;
@@ -228,6 +229,12 @@ impl Row {
             .map(|&(_, c)| c)
     }
 
+    pub(super) fn mark_list(&self) -> &[(u16, char)] {
+        self.extras
+            .as_deref()
+            .map_or(&[], |extras| extras.marks.as_slice())
+    }
+
     #[inline]
     #[must_use]
     pub fn used(&self) -> usize {
@@ -370,7 +377,9 @@ impl Row {
         if self.cells[target].is_blank() || self.marks(target).count() == MAX_MARKS {
             return;
         }
-        self.cells[target].mark();
+        if self.cells[target].ch() != Some(PLACEHOLDER) {
+            self.cells[target].mark();
+        }
         self.extras
             .get_or_insert_default()
             .marks
