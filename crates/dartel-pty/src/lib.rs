@@ -58,7 +58,7 @@ pub fn host_name() -> String {
 }
 
 #[must_use]
-pub fn login_shell(directory: Option<PathBuf>) -> Command {
+pub fn login_shell(directory: Option<PathBuf>, executable: Option<PathBuf>) -> Command {
     let shell = env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| DEFAULT_SHELL.into());
@@ -73,6 +73,10 @@ pub fn login_shell(directory: Option<PathBuf>) -> Command {
         ))
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor");
+    match executable.filter(|executable| executable.is_absolute()) {
+        Some(executable) => command.env("DARTEL_BIN", executable),
+        None => command.env_remove("DARTEL_BIN"),
+    };
     if let Some(directory) = start_directory(directory.map(PathBuf::into_os_string))
         .or_else(|| start_directory(env::var_os("HOME")))
     {

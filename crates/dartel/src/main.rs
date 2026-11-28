@@ -7,6 +7,7 @@ mod session;
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -16,7 +17,12 @@ use winit::event_loop::EventLoop;
 use app::App;
 use session::Signal;
 
-const USAGE: &str = "usage: dartel [config save [FILE] | config load [FILE]]";
+const USAGE: &str =
+    "usage: dartel [config save [FILE] | config load [FILE] | shell zsh | shell bash | shell fish]";
+
+const ZSH: &str = include_str!("../shell/dartel.zsh");
+const BASH: &str = include_str!("../shell/dartel.bash");
+const FISH: &str = include_str!("../shell/dartel.fish");
 
 fn locations() -> Result<Locations, Box<dyn Error>> {
     Locations::from_env().ok_or_else(|| "the home directory is unknown".into())
@@ -49,6 +55,11 @@ fn load(file: Option<&OsString>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn shell(script: &str) -> Result<(), Box<dyn Error>> {
+    io::stdout().write_all(script.as_bytes())?;
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<OsString> = env::args_os().skip(1).collect();
     let words: Vec<&str> = arguments
@@ -59,6 +70,9 @@ fn main() -> ExitCode {
         [] => run(),
         ["config", "save"] | ["config", "save", _] => save(arguments.get(2)),
         ["config", "load"] | ["config", "load", _] => load(arguments.get(2)),
+        ["shell", "zsh"] => shell(ZSH),
+        ["shell", "bash"] => shell(BASH),
+        ["shell", "fish"] => shell(FISH),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);

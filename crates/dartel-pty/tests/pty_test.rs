@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -21,6 +21,14 @@ fn shell(script: &str) -> Command {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
     command
+}
+
+fn variable(command: &Command, name: &str) -> Option<OsString> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new(name))
+        .and_then(|(_, value)| value)
+        .map(OsStr::to_owned)
 }
 
 fn read_until(reader: &mut impl Read, needle: &str) -> String {
@@ -108,21 +116,48 @@ fn spawn_fails_for_a_missing_program() {
 
 #[test]
 fn login_shell_sets_the_terminal_environment() {
-    let command = login_shell(None);
-    let variable = |name: &str| {
-        command
-            .get_envs()
-            .find(|(key, _)| *key == OsStr::new(name))
-            .and_then(|(_, value)| value)
-            .map(OsStr::to_owned)
-    };
+    let command = login_shell(None, None);
     assert_eq!(
-        variable("TERM").as_deref(),
+        variable(&command, "TERM").as_deref(),
         Some(OsStr::new("xterm-256color"))
     );
     assert_eq!(
-        variable("COLORTERM").as_deref(),
+        variable(&command, "COLORTERM").as_deref(),
         Some(OsStr::new("truecolor"))
+    );
+}
+
+#[test]
+fn login_shell_passes_the_executable_in_dartel_bin() {
+    assert_eq!(
+        variable(
+            &login_shell(None, Some("/opt/dartel/bin/dartel".into())),
+            "DARTEL_BIN"
+        )
+        .as_deref(),
+        Some(OsStr::new("/opt/dartel/bin/dartel"))
+    );
+}
+
+#[test]
+fn login_shell_removes_dartel_bin_without_an_executable() {
+    let command = login_shell(None, None);
+    assert_eq!(
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("DARTEL_BIN")),
+        Some((OsStr::new("DARTEL_BIN"), None))
+    );
+}
+
+#[test]
+fn login_shell_removes_dartel_bin_for_a_relative_executable() {
+    let command = login_shell(None, Some("target/debug/dartel".into()));
+    assert_eq!(
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("DARTEL_BIN")),
+        Some((OsStr::new("DARTEL_BIN"), None))
     );
 }
 
@@ -150,7 +185,9 @@ fn start_directory_is_absent_when_home_is_not_a_directory() {
 #[test]
 fn login_shell_starts_in_the_home_directory() {
     assert_eq!(
-        login_shell(None).get_current_dir().map(Path::to_path_buf),
+        login_shell(None, None)
+            .get_current_dir()
+            .map(Path::to_path_buf),
         start_directory(env::var_os("HOME"))
     );
 }
@@ -158,7 +195,7 @@ fn login_shell_starts_in_the_home_directory() {
 #[test]
 fn login_shell_starts_in_the_given_directory() {
     assert_eq!(
-        login_shell(Some(env::temp_dir()))
+        login_shell(Some(env::temp_dir()), None)
             .get_current_dir()
             .map(Path::to_path_buf),
         Some(env::temp_dir())
@@ -168,7 +205,7 @@ fn login_shell_starts_in_the_given_directory() {
 #[test]
 fn login_shell_falls_back_to_home_for_a_missing_directory() {
     assert_eq!(
-        login_shell(Some("/nonexistent/dartel-directory".into()))
+        login_shell(Some("/nonexistent/dartel-directory".into()), None)
             .get_current_dir()
             .map(Path::to_path_buf),
         start_directory(env::var_os("HOME"))
@@ -197,7 +234,7 @@ fn spawned_child_runs_in_the_command_directory() {
 
 #[test]
 fn login_shell_starts_with_a_dash_prefixed_name() {
-    let mut command = login_shell(None);
+    let mut command = login_shell(None, None);
     let name = Path::new(command.get_program())
         .file_name()
         .unwrap()
