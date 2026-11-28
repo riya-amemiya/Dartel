@@ -1,4 +1,6 @@
-use dartel_term::{Attrs, Color, CursorShape, Modes, Palette, Point, Rgb, Row, Span, Style, Term};
+use dartel_term::{
+    Attrs, Cell, Color, CursorShape, Modes, Palette, Point, Rgb, Row, Span, Style, Term,
+};
 use dartel_vt::Parser;
 
 fn term(lines: usize, cols: usize) -> Term {
@@ -1361,4 +1363,91 @@ fn keyboard_flags_are_separate_on_the_alternate_screen() {
 fn full_reset_clears_the_keyboard_flags() {
     let term = fed(1, 5, "\x1b[>1u\x1bc");
     assert_eq!(term.keyboard(), 0);
+}
+
+#[test]
+fn recycled_row_keeps_nothing_of_its_earlier_content() {
+    let mut term = Term::new(2, 6, 1);
+    feed(
+        &mut term,
+        "\x1b[41mab\u{3042}e\u{301}\x1b[K\x1b[m\r\n\r\n\r\n",
+    );
+    assert!(
+        term.grid()
+            .rows()
+            .all(|row| row.cells().iter().all(|&cell| cell == Cell::default()))
+    );
+    assert!(term.grid().rows().all(|row| row.marks(4).next().is_none()));
+}
+
+#[test]
+fn text_written_after_erasing_to_the_end_of_the_line_stays() {
+    let term = fed(1, 8, "abcdef\x1b[1;3H\x1b[K\x1b[1;7Hz");
+    assert_eq!(screen(&term), ["ab    z"]);
+}
+
+#[test]
+fn line_edits_give_the_same_screen_wherever_the_history_starts() {
+    for scrolled in 0..12 {
+        let mut term = Term::new(4, 3, 2);
+        feed(&mut term, &"x\r\n".repeat(scrolled));
+        feed(
+            &mut term,
+            "\x1b[2J\x1b[H1\r\n2\r\n3\r\n4\x1b[2;1H\x1b[L\x1b[3;1H\x1b[M\x1b[1;1H\x1bM\x1b[2S",
+        );
+        assert_eq!(screen(&term), ["", "3", "", ""], "scrolled {scrolled}");
+    }
+}
+
+#[test]
+fn resize_keeps_the_row_order_after_the_history_wrapped_around() {
+    let mut term = Term::new(2, 4, 2);
+    feed(&mut term, "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7");
+    term.resize(3, 6);
+    assert_eq!(term.grid().history(), 1);
+    assert_eq!(absolute(&term, 0), "4");
+    assert_eq!(screen(&term), ["5", "6", "7"]);
+}
+
+#[test]
+fn erasing_saved_lines_keeps_the_screen_after_the_history_wrapped_around() {
+    let mut term = Term::new(2, 4, 2);
+    feed(&mut term, "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[3J\r\n8");
+    assert_eq!(term.grid().history(), 1);
+    assert_eq!(absolute(&term, 0), "6");
+    assert_eq!(screen(&term), ["7", "8"]);
+}
+
+#[test]
+fn scroll_region_from_the_top_keeps_lines_below_it_once_the_history_is_full() {
+    let mut term = Term::new(3, 4, 1);
+    feed(&mut term, "1\r\n2\r\n3\r\n4\r\n5\x1b[1;2r\x1b[2;1H\n\n");
+    assert_eq!(screen(&term), ["", "", "5"]);
+    assert_eq!(term.grid().history(), 1);
+    assert_eq!(absolute(&term, 0), "4");
+}
+
+#[test]
+fn alternate_screen_scrolls_its_rows_in_order() {
+    let term = fed(3, 4, "\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5");
+    assert_eq!(screen(&term), ["3", "4", "5"]);
+    assert_eq!(term.grid().history(), 0);
+}
+
+#[test]
+fn long_runs_of_wide_characters_wrap_across_several_lines() {
+    let term = fed(12, 6, &"\u{3042}".repeat(35));
+    assert_eq!(screen(&term)[..11], ["\u{3042}\u{3042}\u{3042}"; 11]);
+    assert_eq!(screen(&term)[11], "\u{3042}\u{3042}");
+    assert_eq!(cursor(&term), (11, 4));
+}
+
+#[test]
+fn wide_characters_after_narrow_text_keep_their_columns() {
+    let term = fed(1, 10, "a\u{3042}\u{E9}\u{4E2D}b");
+    assert_eq!(screen(&term), ["a\u{3042}\u{E9}\u{4E2D}b"]);
+    assert_eq!(cursor(&term), (0, 7));
+    assert!(term.grid().row(0).cells()[1].is_wide());
+    assert!(term.grid().row(0).cells()[2].is_spacer());
+    assert!(term.grid().row(0).cells()[4].is_wide());
 }

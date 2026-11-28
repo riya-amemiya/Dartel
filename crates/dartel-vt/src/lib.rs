@@ -10,12 +10,20 @@ pub const MAX_INTERMEDIATES: usize = 2;
 pub const MAX_OSC_PARAMS: usize = 16;
 pub const MAX_OSC_BYTES: usize = 16 * 1024 * 1024;
 
+const CHAR_BATCH: usize = 32;
+
 pub trait Perform {
     fn print(&mut self, c: char);
 
     fn print_ascii(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             self.print(char::from(byte));
+        }
+    }
+
+    fn print_chars(&mut self, chars: &[char]) {
+        for &c in chars {
+            self.print(c);
         }
     }
 
@@ -99,6 +107,7 @@ impl Parser {
         while index < bytes.len() {
             index += match self.state {
                 State::Ground => self.ground(performer, &bytes[index..]),
+                State::CsiEntry | State::CsiParam => self.csi(performer, &bytes[index..]),
                 State::OscString => self.osc_string(performer, &bytes[index..]),
                 State::DcsPassthrough => self.dcs_passthrough(performer, &bytes[index..]),
                 State::ApcString => self.apc_string(performer, &bytes[index..]),
@@ -134,46 +143,106 @@ impl Parser {
 
     #[inline]
     fn ground<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
-        let run = scan::printable_run(bytes);
-        if run > 0 {
-            performer.print_ascii(&bytes[..run]);
+        let mut index = 0;
+        while let Some(&byte) = bytes.get(index) {
+            match byte {
+                0x20..=0x7E => {
+                    let run = scan::printable_run(&bytes[index..]);
+                    performer.print_ascii(&bytes[index..index + run]);
+                    index += run;
+                }
+                0x1B => {
+                    self.enter_escape();
+                    if bytes.get(index + 1) != Some(&b'[') {
+                        return index + 1;
+                    }
+                    self.state = State::CsiEntry;
+                    index += 2 + self.csi(performer, &bytes[index + 2..]);
+                    if self.state != State::Ground {
+                        return index;
+                    }
+                }
+                0x7F => index += 1,
+                0x00..=0x1F => {
+                    performer.execute(byte);
+                    index += 1;
+                }
+                _ => index += self.multibyte(performer, &bytes[index..]),
+            }
         }
-        let Some(&byte) = bytes.get(run) else {
-            return run;
-        };
-        run + match byte {
-            0x1B => {
-                self.enter_escape();
-                1
+        index
+    }
+
+    #[inline]
+    fn csi<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        let mut current = self.current;
+        let mut entered = false;
+        for (index, &byte) in bytes.iter().enumerate() {
+            match byte {
+                b'0'..=b'9' => {
+                    current = current
+                        .saturating_mul(10)
+                        .saturating_add(u16::from(byte - b'0'));
+                    entered = true;
+                }
+                b';' | b':' => {
+                    if self.params.is_full() {
+                        self.ignoring = true;
+                    } else {
+                        self.params.push(current, self.sub_pending);
+                    }
+                    current = 0;
+                    self.sub_pending = byte == b':';
+                    entered = true;
+                }
+                _ => {
+                    self.enter_params(current, entered);
+                    if matches!(byte, 0x40..=0x7E) {
+                        self.dispatch_csi(performer, byte);
+                    } else {
+                        self.step(performer, byte);
+                    }
+                    return index + 1;
+                }
             }
-            0x7F => 1,
-            0x00..=0x7E => {
-                performer.execute(byte);
-                1
-            }
-            _ => self.multibyte(performer, &bytes[run..]),
+        }
+        self.enter_params(current, entered);
+        bytes.len()
+    }
+
+    #[inline]
+    fn enter_params(&mut self, current: u16, entered: bool) {
+        self.current = current;
+        if entered {
+            self.param_seen = true;
+            self.state = State::CsiParam;
         }
     }
 
     fn multibyte<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        let mut chars = ['\0'; CHAR_BATCH];
+        let mut count = 0;
         let mut index = 0;
         while index < bytes.len() && bytes[index] >= 0x80 {
-            match utf8::decode(&bytes[index..]) {
-                Decoded::Char(c, len) => {
-                    performer.print(c);
-                    index += len;
-                }
-                Decoded::Invalid(len) => {
-                    performer.print(char::REPLACEMENT_CHARACTER);
-                    index += len;
-                }
+            let (c, len) = match utf8::decode(&bytes[index..]) {
+                Decoded::Char(c, len) => (c, len),
+                Decoded::Invalid(len) => (char::REPLACEMENT_CHARACTER, len),
                 Decoded::Incomplete => {
+                    performer.print_chars(&chars[..count]);
                     self.pending_len = (bytes.len() - index) as u8;
                     self.pending[..bytes.len() - index].copy_from_slice(&bytes[index..]);
                     return bytes.len();
                 }
+            };
+            chars[count] = c;
+            count += 1;
+            index += len;
+            if count == CHAR_BATCH {
+                performer.print_chars(&chars);
+                count = 0;
             }
         }
+        performer.print_chars(&chars[..count]);
         index
     }
 

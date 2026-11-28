@@ -1,106 +1,84 @@
 use super::style::StyleId;
 
-const WIDE: u16 = 1;
-const SPACER: u16 = 1 << 1;
-const MARKED: u16 = 1 << 2;
+const CODE: u64 = 0xFFFF_FFFF;
+const STYLE: u32 = 32;
+const WIDE: u64 = 1 << 48;
+const SPACER: u64 = 1 << 49;
+const MARKED: u64 = 1 << 50;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct Cell {
-    code: u32,
-    style: StyleId,
-    flags: u16,
-}
+#[repr(transparent)]
+pub struct Cell(u64);
 
 impl Cell {
     #[inline]
     pub(crate) const fn blank(style: StyleId) -> Cell {
-        Cell {
-            code: 0,
-            style,
-            flags: 0,
-        }
+        Cell((style.raw() as u64) << STYLE)
     }
 
     #[inline]
     pub(crate) const fn ascii(byte: u8, style: StyleId) -> Cell {
-        Cell {
-            code: byte as u32,
-            style,
-            flags: 0,
-        }
+        Cell(byte as u64 | (style.raw() as u64) << STYLE)
     }
 
     #[inline]
     pub(crate) const fn narrow(c: char, style: StyleId) -> Cell {
-        Cell {
-            code: c as u32,
-            style,
-            flags: 0,
-        }
+        Cell(c as u64 | (style.raw() as u64) << STYLE)
     }
 
     #[inline]
     pub(crate) const fn wide(c: char, style: StyleId) -> Cell {
-        Cell {
-            code: c as u32,
-            style,
-            flags: WIDE,
-        }
+        Cell(c as u64 | (style.raw() as u64) << STYLE | WIDE)
     }
 
     #[inline]
     pub(crate) const fn spacer(style: StyleId) -> Cell {
-        Cell {
-            code: 0,
-            style,
-            flags: SPACER,
-        }
+        Cell((style.raw() as u64) << STYLE | SPACER)
     }
 
     #[inline]
     #[must_use]
     pub fn ch(self) -> Option<char> {
-        char::from_u32(self.code).filter(|_| self.code != 0)
+        char::from_u32(self.0 as u32).filter(|&c| c != '\0')
     }
 
     #[inline]
     #[must_use]
     pub const fn is_blank(self) -> bool {
-        self.code == 0 && self.flags & SPACER == 0
+        self.0 & (CODE | SPACER) == 0
     }
 
     #[inline]
     #[must_use]
     pub const fn is_wide(self) -> bool {
-        self.flags & WIDE != 0
+        self.0 & WIDE != 0
     }
 
     #[inline]
     #[must_use]
     pub const fn is_spacer(self) -> bool {
-        self.flags & SPACER != 0
+        self.0 & SPACER != 0
     }
 
     #[inline]
     #[must_use]
     pub const fn is_marked(self) -> bool {
-        self.flags & MARKED != 0
+        self.0 & MARKED != 0
     }
 
     #[inline]
     #[must_use]
     pub const fn style(self) -> StyleId {
-        self.style
+        StyleId::from_raw((self.0 >> STYLE) as u16)
     }
 
     #[inline]
     pub(crate) fn set_style(&mut self, style: StyleId) {
-        self.style = style;
+        self.0 = self.0 & !(0xFFFF << STYLE) | u64::from(style.raw()) << STYLE;
     }
 
     #[inline]
     pub(crate) fn mark(&mut self) {
-        self.flags |= MARKED;
+        self.0 |= MARKED;
     }
 }

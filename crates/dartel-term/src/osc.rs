@@ -59,6 +59,7 @@ impl Term {
             }
             [b"8", _, uri @ ..] => {
                 self.pen.style.link = self.link_id(&String::from_utf8_lossy(&uri.join(&b';')));
+                self.restyle();
             }
             [b"4", pairs @ ..] => {
                 for &[index, spec] in pairs.as_chunks::<2>().0 {

@@ -29,6 +29,7 @@ fn extended(group: &[u16], rest: &mut ParamsIter<'_>) -> Option<Color> {
 
 impl Term {
     pub(super) fn select_graphic_rendition(&mut self, params: &Params) {
+        self.restyle();
         let plain = Style {
             link: self.pen.style.link,
             ..Style::default()

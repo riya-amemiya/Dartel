@@ -15,6 +15,8 @@ pub struct Row {
     cells: Vec<Cell>,
     marks: Vec<(u16, char)>,
     tiles: Vec<Tile>,
+    used: u16,
+    wide: bool,
     wrapped: bool,
     tags: u8,
 }
@@ -36,12 +38,23 @@ impl Logical {
     }
 }
 
+#[inline]
+fn reach(cols: usize, blank: Cell) -> u16 {
+    if blank == Cell::default() {
+        0
+    } else {
+        cols as u16
+    }
+}
+
 impl Row {
     pub(super) fn new(cols: usize, blank: Cell) -> Row {
         Row {
             cells: vec![blank; cols],
             marks: Vec::new(),
             tiles: Vec::new(),
+            used: reach(cols, blank),
+            wide: false,
             wrapped: false,
             tags: 0,
         }
@@ -60,6 +73,8 @@ impl Row {
             cells: cells.to_vec(),
             marks: marks.collect(),
             tiles,
+            used: reach(cols, blank).max(cells.len().min(cols) as u16),
+            wide: cells.iter().any(|cell| cell.is_wide() || cell.is_spacer()),
             wrapped,
             tags,
         };
@@ -179,24 +194,40 @@ impl Row {
 
     #[must_use]
     pub fn occupied(&self) -> usize {
-        self.cells
+        self.cells[..usize::from(self.used)]
             .iter()
             .rposition(|cell| !cell.is_blank())
             .map_or(0, |last| last + 1)
     }
 
-    pub(super) fn clear(&mut self, cols: usize, blank: Cell) {
-        self.cells.truncate(cols);
-        self.cells.fill(blank);
-        self.cells.resize(cols, blank);
+    #[inline]
+    fn wipe(&mut self, cols: usize, blank: Cell) {
+        if self.cells.len() == cols && blank == Cell::default() {
+            self.cells[..usize::from(self.used)].fill(blank);
+        } else {
+            self.refill(cols, blank);
+        }
+        self.used = reach(cols, blank);
+        self.wide = false;
         self.marks.clear();
-        self.tiles.retain(|tile| !tile.fragile);
         self.wrapped = false;
         self.tags = 0;
     }
 
+    fn refill(&mut self, cols: usize, blank: Cell) {
+        self.cells.truncate(cols);
+        self.cells.fill(blank);
+        self.cells.resize(cols, blank);
+    }
+
+    pub(super) fn clear(&mut self, cols: usize, blank: Cell) {
+        self.wipe(cols, blank);
+        self.tiles.retain(|tile| !tile.fragile);
+    }
+
+    #[inline]
     pub(super) fn reset(&mut self, cols: usize, blank: Cell) {
-        self.clear(cols, blank);
+        self.wipe(cols, blank);
         self.tiles.clear();
     }
 
@@ -204,6 +235,11 @@ impl Row {
         if cols < self.cells.len() {
             self.release(cols..self.cells.len());
         }
+        self.used = if cols > self.cells.len() {
+            self.used.max(reach(cols, blank))
+        } else {
+            self.used.min(cols as u16)
+        };
         self.cells.resize(cols, blank);
     }
 
@@ -216,21 +252,34 @@ impl Row {
         {
             *cell = Cell::ascii(byte, style);
         }
+        self.used = self.used.max((column + bytes.len()) as u16);
     }
 
+    #[inline]
     pub(super) fn write(&mut self, column: usize, c: char, width: usize, style: StyleId) {
         self.release(column..column + width);
         if width == 2 {
             self.cells[column] = Cell::wide(c, style);
             self.cells[column + 1] = Cell::spacer(style);
+            self.wide = true;
         } else {
             self.cells[column] = Cell::narrow(c, style);
         }
+        self.used = self.used.max((column + width) as u16);
     }
 
     pub(super) fn erase(&mut self, range: Range<usize>, blank: Cell) {
         self.release(range.clone());
-        self.cells[range].fill(blank);
+        let used = usize::from(self.used);
+        if blank != Cell::default() {
+            self.used = self.used.max(range.end as u16);
+            self.cells[range].fill(blank);
+        } else if range.start < used {
+            if range.end >= used {
+                self.used = range.start as u16;
+            }
+            self.cells[range.start..range.end.min(used)].fill(blank);
+        }
     }
 
     pub(super) fn insert(&mut self, column: usize, count: usize, blank: Cell) {
@@ -245,6 +294,7 @@ impl Row {
         if self.cells[cols - 1].is_wide() {
             self.cells[cols - 1] = Cell::blank(self.cells[cols - 1].style());
         }
+        self.used = cols as u16;
         self.marks.retain_mut(|(mark, _)| {
             if usize::from(*mark) >= column {
                 *mark += count as u16;
@@ -259,6 +309,7 @@ impl Row {
         self.release(column..column + count);
         self.cells[column..].rotate_left(count);
         self.cells[cols - count..].fill(blank);
+        self.used = cols as u16;
         for (mark, _) in &mut self.marks {
             if usize::from(*mark) >= column + count {
                 *mark -= count as u16;
@@ -277,9 +328,22 @@ impl Row {
 
     #[inline]
     fn release(&mut self, range: Range<usize>) {
-        if range.is_empty() {
-            return;
+        if !range.is_empty()
+            && (!self.tiles.is_empty()
+                || range.start < usize::from(self.used)
+                    && (!self.marks.is_empty()
+                        || self.wide
+                            && (self.cells[range.start].is_spacer()
+                                || self
+                                    .cells
+                                    .get(range.end)
+                                    .is_some_and(|cell| cell.is_spacer()))))
+        {
+            self.detach(range);
         }
+    }
+
+    fn detach(&mut self, range: Range<usize>) {
         let start =
             range.start - usize::from(range.start > 0 && self.cells[range.start].is_spacer());
         let end = range.end

@@ -7,6 +7,31 @@ pub(super) enum Decoded {
 
 #[inline]
 pub(super) fn decode(bytes: &[u8]) -> Decoded {
+    match *bytes {
+        [
+            lead @ (0xE1..=0xEC | 0xEE..=0xEF),
+            second @ 0x80..=0xBF,
+            third @ 0x80..=0xBF,
+            ..,
+        ] => Decoded::Char(
+            char::from_u32(
+                u32::from(lead & 0x0F) << 12
+                    | u32::from(second & 0x3F) << 6
+                    | u32::from(third & 0x3F),
+            )
+            .unwrap_or(char::REPLACEMENT_CHARACTER),
+            3,
+        ),
+        [lead @ 0xC2..=0xDF, second @ 0x80..=0xBF, ..] => Decoded::Char(
+            char::from_u32(u32::from(lead & 0x1F) << 6 | u32::from(second & 0x3F))
+                .unwrap_or(char::REPLACEMENT_CHARACTER),
+            2,
+        ),
+        _ => general(bytes),
+    }
+}
+
+fn general(bytes: &[u8]) -> Decoded {
     let Some(&lead) = bytes.first() else {
         return Decoded::Incomplete;
     };

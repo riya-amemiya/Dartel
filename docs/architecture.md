@@ -176,11 +176,15 @@ flowchart LR
 `vt::Parser` is a byte-driven state machine. Most output is plain text, so the
 `Ground` state has a bulk path. `scan::printable_run` returns the length of the
 leading run of bytes in `0x20..=0x7E`, and the parser hands that whole run to
-`Perform::print_ascii` in one call. Three string states take their bytes in
-bulk too. `OscString` and `ApcString` copy their payload into one buffer, and
-`DcsPassthrough` hands each run of data to `Perform::put`. An application
-program command ends in `Perform::apc_dispatch` with its whole payload. Every
-other state consumes one byte per step.
+`Perform::print_ascii` in one call. `Ground` stays in one loop over the read
+buffer while it sees text, C0 controls, and complete CSI sequences. A run of
+multibyte characters is decoded into batches of up to 32 characters for
+`Perform::print_chars`. `CsiEntry` and `CsiParam` read digits and separators
+in one loop and leave every other byte to the single-byte step. Three string
+states take their bytes in bulk too. `OscString` and `ApcString` copy their
+payload into one buffer, and `DcsPassthrough` hands each run of data to
+`Perform::put`. An application program command ends in `Perform::apc_dispatch`
+with its whole payload. Every other state consumes one byte per step.
 
 ```mermaid
 stateDiagram-v2
@@ -247,7 +251,8 @@ classDiagram
         usize display_offset
     }
     class Grid {
-        VecDeque~Row~ rows
+        Vec~Row~ rows
+        usize head
         usize lines
         usize cols
         usize history_limit
@@ -256,17 +261,18 @@ classDiagram
         Vec~Cell~ cells
         Vec marks
         Vec~Tile~ tiles
+        u16 used
+        bool wide
         bool wrapped
         u8 tags
     }
     class Cell {
-        u32 code
-        StyleId style
-        u16 flags
+        u64 bits
     }
     class StyleTable {
         Vec~Style~ styles
         HashMap ids
+        Array recent
     }
     class Damage {
         Vec~bool~ lines
@@ -280,33 +286,48 @@ classDiagram
     Cell ..> StyleTable : StyleId is an index
 ```
 
-- `Cell` is 8 bytes. It stores the code point, a `StyleId`, and flags for
-  wide characters, the spacer cell after a wide character, and attached
-  combining marks.
+- `Cell` is one `u64`. The low 32 bits hold the code point, the next 16 hold
+  the `StyleId`, and the bits above them are the flags for wide characters,
+  the spacer cell after a wide character, and attached combining marks. The
+  default cell is zero.
 - `Row` stores combining marks outside the cells, as `(column, char)` pairs,
   with at most 8 marks per cell. `wrapped` records that the row continues on
   the next row. `tags` holds the shell marks of the row, and `tiles` holds the
   parts of images that the row shows.
-- `Grid` is a `VecDeque<Row>`. The last `lines` rows are the screen and the
-  rows before them are scrollback. When scrollback is full, the oldest row is
-  popped and reused as the new blank row.
+- `Row::used` counts the leading cells that may differ from the default cell,
+  so clearing a row and erasing to the end of a line write only those cells.
+  `Row::wide` records that the row may hold a wide character. A write looks
+  for a wide character to split only when `wide` is set and the write starts
+  inside the used cells.
+- `Grid` is a ring of rows, a `Vec<Row>` and the index `head` of its oldest
+  row. The last `lines` rows are the screen and the rows before them are
+  scrollback. When scrollback is full, a line feed at the bottom clears the
+  oldest row and advances `head`, so that row becomes the last row without a
+  move. Scrolling inside a region rotates that part of the `Vec`. A change to
+  the number of rows first rotates the ring until `head` is zero.
 - `Term` owns two grids, one for the primary screen and one for the alternate
   screen. `grid` is whichever is active and `inactive` is the other, and
   switching screens swaps them. The alternate grid keeps no scrollback.
 - `StyleTable` interns each distinct `Style`. The key packs the three colors,
   the attributes, and the link id into a `u128`. A `StyleId` is a `u16`, and
   when the table is full, `Term` rebuilds it from the styles that cells still
-  reference.
-- `Pen` defers interning. SGR sequences only change `pen.style`, and the style
-  is interned when the next character is written.
+  reference. A direct-mapped array of 16 recent keys answers a repeated lookup
+  before the hash map.
+- `Pen` defers interning. SGR sequences only change `pen.style` and mark the
+  pen as stale, and the style is interned when the next character is written.
 - `Damage` marks the lines a frame has to rebuild. Scrolling the view or
   resizing sets `full`.
 
 Printable ASCII takes a short path through `Term::write_ascii`. While insert
 mode is off and the active character set is ASCII, a run is copied into the
-row in one loop per line without a width lookup. Other characters go through
-`Term::write_char`, which handles width, wide characters at the right margin,
-and combining marks.
+row in one loop per line without a width lookup. Other characters arrive in
+runs through `Term::write_chars`. Under the same two conditions it writes the
+characters that end before the last column into the cursor row in one loop. A
+character that needs a wrap, reaches the last column, or has no width goes
+through `Term::write_char`, which handles width, wide characters at the right
+margin, and combining marks. A range check decides the width of the common
+CJK, Latin, Greek, Cyrillic, and box drawing characters before the
+`unicode-width` table is read.
 
 Resizing rewraps the primary screen when the column count changes. Rows joined
 by `wrapped` are merged into logical lines and split again at the new width,

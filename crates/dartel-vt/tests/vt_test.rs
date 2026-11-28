@@ -589,3 +589,36 @@ fn byte_at_a_time_input_yields_the_same_actions() {
     let chunks: Vec<&[u8]> = stream.chunks(1).collect();
     assert_eq!(parse(&chunks), parse(&[stream]));
 }
+
+#[test]
+fn default_print_chars_forwards_each_character_to_print() {
+    let mut counter = CharCounter::default();
+    Parser::new().advance(&mut counter, "\u{3042}".repeat(40).as_bytes());
+    assert_eq!(counter.printed, vec!['\u{3042}'; 40]);
+}
+
+#[test]
+fn csi_parameter_split_between_digits_keeps_its_value() {
+    assert_eq!(
+        parse(&[b"\x1b[12", b"34;5", b"6m"]),
+        vec![csi(&[&[1234], &[56]], b"", b'm')]
+    );
+}
+
+#[test]
+fn csi_subparameter_in_the_last_slot_joins_the_group_before_it() {
+    let numbers: Vec<String> = (1..MAX_PARAMS).map(|value| value.to_string()).collect();
+    let last = MAX_PARAMS as u16 - 1;
+    assert_eq!(
+        parse(&[format!("\x1b[{}:7m", numbers.join(";")).as_bytes()]),
+        vec![Action::Csi {
+            params: (1..last)
+                .map(|value| vec![value])
+                .chain([vec![last, 7]])
+                .collect(),
+            intermediates: Vec::new(),
+            ignore: false,
+            action: b'm',
+        }]
+    );
+}

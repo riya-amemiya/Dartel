@@ -4,26 +4,56 @@ use super::charset::Charset;
 use super::graphics::Graphics;
 use super::{Cell, Cursor, Modes, Outbox, Saved, Style, StyleId, Term};
 
+#[inline]
+fn width(c: char) -> Option<usize> {
+    match c {
+        '\u{3041}'..='\u{3096}'
+        | '\u{30A1}'..='\u{30FA}'
+        | '\u{4E00}'..='\u{9FFF}'
+        | '\u{AC00}'..='\u{D7A3}'
+        | '\u{FF01}'..='\u{FF60}' => Some(2),
+        '\u{A1}'..='\u{AC}'
+        | '\u{AE}'..='\u{2FF}'
+        | '\u{391}'..='\u{3A1}'
+        | '\u{3A3}'..='\u{3FF}'
+        | '\u{400}'..='\u{482}'
+        | '\u{2500}'..='\u{259F}' => Some(1),
+        _ => c.width(),
+    }
+}
+
 impl Term {
     #[inline]
     pub(super) fn pen_id(&mut self) -> StyleId {
-        if self.pen.interned != self.pen.style {
-            self.pen.id = self.intern(self.pen.style);
-            self.pen.interned = self.pen.style;
+        if self.pen.stale {
+            self.pen.stale = false;
+            if self.pen.interned != self.pen.style {
+                self.pen.id = self.intern(self.pen.style);
+                self.pen.interned = self.pen.style;
+            }
         }
         self.pen.id
     }
 
     #[inline]
     pub(super) fn blank(&mut self) -> Cell {
-        if self.pen.blank_background != self.pen.style.background {
-            self.pen.blank = self.intern(Style {
-                background: self.pen.style.background,
-                ..Style::default()
-            });
-            self.pen.blank_background = self.pen.style.background;
+        if self.pen.blank_stale {
+            self.pen.blank_stale = false;
+            if self.pen.blank_background != self.pen.style.background {
+                self.pen.blank = self.intern(Style {
+                    background: self.pen.style.background,
+                    ..Style::default()
+                });
+                self.pen.blank_background = self.pen.style.background;
+            }
         }
         Cell::blank(self.pen.blank)
+    }
+
+    #[inline]
+    pub(super) fn restyle(&mut self) {
+        self.pen.stale = true;
+        self.pen.blank_stale = true;
     }
 
     fn intern(&mut self, style: Style) -> StyleId {
@@ -76,6 +106,21 @@ impl Term {
         }
         let style = self.pen_id();
         let cols = self.cols();
+        let Cursor {
+            line,
+            column,
+            pending_wrap,
+        } = self.cursor;
+        if !pending_wrap
+            && column + bytes.len() < cols
+            && let Some(&last) = bytes.last()
+        {
+            self.grid.row_mut(line).write_ascii(column, bytes, style);
+            self.touch(line);
+            self.cursor.column = column + bytes.len();
+            self.last_char = Some(char::from(last));
+            return;
+        }
         let mut rest = bytes;
         while !rest.is_empty() {
             if self.cursor.pending_wrap {
@@ -111,9 +156,55 @@ impl Term {
             .or(self.last_char);
     }
 
+    pub(super) fn write_chars(&mut self, chars: &[char]) {
+        let mut rest = chars;
+        while let Some(&first) = rest.first() {
+            let taken = self.write_span(rest);
+            if taken == 0 {
+                self.write_char(first);
+                rest = &rest[1..];
+            } else {
+                rest = &rest[taken..];
+            }
+        }
+    }
+
+    fn write_span(&mut self, chars: &[char]) -> usize {
+        if !self.fast_print || self.cursor.pending_wrap {
+            return 0;
+        }
+        let style = self.pen_id();
+        let cols = self.cols();
+        let Cursor { line, column, .. } = self.cursor;
+        let row = self.grid.row_mut(line);
+        let mut end = column;
+        let mut taken = 0;
+        for &c in chars {
+            let Some(span @ 1..) = width(c) else {
+                break;
+            };
+            if end + span >= cols {
+                break;
+            }
+            row.write(end, c, span, style);
+            end += span;
+            taken += 1;
+        }
+        if let Some(&last) = chars[..taken].last() {
+            self.touch(line);
+            self.cursor.column = end;
+            self.last_char = Some(last);
+        }
+        taken
+    }
+
     pub(super) fn write_char(&mut self, c: char) {
-        let c = self.charsets[self.shift].translate(c);
-        let Some(width) = c.width() else {
+        let c = if self.fast_print {
+            c
+        } else {
+            self.charsets[self.shift].translate(c)
+        };
+        let Some(width) = width(c) else {
             return;
         };
         if width == 0 {
@@ -179,6 +270,7 @@ impl Term {
         }
     }
 
+    #[inline]
     pub(super) fn linefeed(&mut self) {
         self.cursor.pending_wrap = false;
         if self.cursor.line == self.bottom {
@@ -197,6 +289,7 @@ impl Term {
         }
     }
 
+    #[inline]
     pub(super) fn carriage_return(&mut self) {
         self.cursor.column = 0;
         self.cursor.pending_wrap = false;
@@ -308,6 +401,7 @@ impl Term {
         )
     }
 
+    #[inline]
     pub(super) fn scroll_up(&mut self, count: usize) {
         let blank = self.blank();
         let kept = self
@@ -448,6 +542,7 @@ impl Term {
             pending_wrap: self.saved.cursor.pending_wrap,
         };
         self.pen.style = self.saved.pen;
+        self.restyle();
         self.charsets = self.saved.charsets;
         self.shift = self.saved.shift;
         self.modes.set(Modes::ORIGIN, self.saved.origin);
@@ -493,6 +588,7 @@ impl Term {
         self.top = 0;
         self.bottom = self.lines() - 1;
         self.pen.style = Style::default();
+        self.restyle();
         self.charsets = [Charset::default(); 4];
         self.shift = 0;
         self.saved = Saved::default();
@@ -514,5 +610,19 @@ impl Term {
                 self.base_palette.clone(),
             )
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use unicode_width::UnicodeWidthChar;
+
+    use super::width;
+
+    #[test]
+    fn width_matches_the_width_table_for_every_character() {
+        for c in (0..=0x0010_FFFF).filter_map(char::from_u32) {
+            assert_eq!(width(c), c.width(), "{c:?}");
+        }
     }
 }
