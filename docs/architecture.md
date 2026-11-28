@@ -162,10 +162,23 @@ flowchart LR
   corpus is not a dependency of this repository.
 - `Config::from_toml` starts from the defaults and rejects an unknown key, a
   wrong type, and a value outside its range, each with the line number.
+- `Config::keys` holds parsed shortcuts, one `Option<Shortcut>` for each
+  `Action`. A `Shortcut` is a `Modifiers` bit set and a `Key`, which is a
+  lowercase ASCII character or a `Named` key. `dartel-config` has no window
+  dependency, so these types are its own, and the binary maps them to winit
+  keys. The defaults differ only in the primary modifier, `PRIMARY`, which is
+  `cmd` on macOS and `ctrl+shift` on Linux.
+- The `[keys]` table is applied entry by entry, and then every entry of the
+  table is checked against the shortcuts of all actions, so two actions can
+  swap shortcuts in one file. A clash is reported at the later entry with the
+  names of both actions.
 - `Config::encode` writes a magic that includes a format number, the fixed
-  width fields in little-endian order, and the font family. `Config::decode`
-  returns `None` for another magic, a short input, or a value outside its
-  range, and start-up then uses the defaults.
+  width fields in little-endian order, two bytes for each action, and the font
+  family. The two bytes are the modifier bits and the key, which is the ASCII
+  byte of a character or `0x80` plus the index of a named key, and two zero
+  bytes mean no shortcut. `Config::decode` returns `None` for another magic, a
+  short input, a value outside its range, a byte that names no key, or two
+  actions with one shortcut, and start-up then uses the defaults.
 - `Locations::resolve` places the TOML file under `XDG_CONFIG_HOME` and the
   state file under `XDG_STATE_HOME`, with `~/.config` and `~/.local/state` as
   fallbacks on both platforms.
@@ -174,8 +187,9 @@ flowchart LR
   same functions.
 - A load in the window rebuilds the `Scene` for the font and the padding, sets
   the palette of every `Term` through `Term::set_palette`, and resizes every
-  session. The scrollback limit applies to tabs opened after the load, and the
-  window size in cells applies at the next start.
+  session. It replaces `View::config`, and the next key event reads the new
+  shortcuts from it. The scrollback limit applies to tabs opened after the
+  load, and the window size in cells applies at the next start.
 
 ## Parsing
 
@@ -600,12 +614,18 @@ flowchart TD
   set it asks `keys::encode` first, and otherwise it uses the terminal modes
   for application cursor keys. A key release is encoded only for that
   protocol.
-- Shortcuts are handled before encoding and use Command on macOS and
-  Ctrl+Shift on Linux. They are paste, copy, the copy of the last output,
-  search, the prompt jumps, a new tab, closing a tab, tab selection, the font
-  size, and the two settings prompts. Tab selection and the font size match
-  the physical key, so they do not depend on the keyboard layout.
-- A press with the shortcut modifier opens the target under the pointer. Two
+- Shortcuts are handled before encoding. `View::action` tries the shortcut of
+  every `Action` in `Config::keys`. A shortcut applies when the held modifiers
+  contain its modifiers. A letter is compared with the logical key, ignoring
+  case. A digit or a symbol matches through the physical key that carries it
+  on a US layout, and a symbol that needs Shift there also matches through the
+  logical key. A named key is compared with the logical key. The shortcut with
+  the most modifiers wins, a physical match wins over a logical one, and the
+  order of `Action::ALL` breaks the remaining ties. A press with Command on
+  macOS, or Super on Linux, that matches no shortcut is not sent to the shell.
+  A key release that matches a shortcut is not sent either.
+- A press with Command on macOS, or Ctrl+Shift on Linux, opens the target
+  under the pointer. The `[keys]` table does not change this modifier. Two
   and three presses on one cell within 500 ms select a word and a line.
 - A selection is a `Selection`, either `Stream`, which follows the text from
   one point to another, or `Block`, a rectangle. A drag that starts with Alt
@@ -633,7 +653,8 @@ flowchart TD
 | wgpu backend | Metal | Vulkan or GLES |
 | Default font family | Menlo, then Monaco | DejaVu Sans Mono, then Liberation Mono |
 | Clipboard | `pbpaste`, `pbcopy` | `wl-paste` and `wl-copy`, then `xclip` |
-| Shortcut modifier | Command | Ctrl+Shift |
+| Default shortcut modifier | Command | Ctrl+Shift |
+| Link click modifier | Command | Ctrl+Shift |
 | Opener for links | `open` | `xdg-open` |
 | Meta key | Left Option | Alt |
 | Rectangle selection modifier | Option | Alt |

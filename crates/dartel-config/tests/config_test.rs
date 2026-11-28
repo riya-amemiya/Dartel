@@ -3,8 +3,66 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use dartel_config::{Config, Error, Locations, active, expand, load, save, toml};
+use dartel_config::{
+    Action, Config, Error, Key, Keys, Locations, Modifiers, Named, Shortcut, active, expand, load,
+    save, toml,
+};
 use dartel_term::{Palette, Rgb};
+
+#[cfg(target_os = "macos")]
+const DEFAULT_SHORTCUTS: [&str; 24] = [
+    "cmd+v",
+    "cmd+c",
+    "cmd+o",
+    "cmd+f",
+    "cmd+up",
+    "cmd+down",
+    "cmd+t",
+    "cmd+w",
+    "cmd+1",
+    "cmd+2",
+    "cmd+3",
+    "cmd+4",
+    "cmd+5",
+    "cmd+6",
+    "cmd+7",
+    "cmd+8",
+    "cmd+9",
+    "cmd++",
+    "cmd+-",
+    "cmd+0",
+    "cmd+s",
+    "cmd+l",
+    "shift+pageup",
+    "shift+pagedown",
+];
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_SHORTCUTS: [&str; 24] = [
+    "ctrl+shift+v",
+    "ctrl+shift+c",
+    "ctrl+shift+o",
+    "ctrl+shift+f",
+    "ctrl+shift+up",
+    "ctrl+shift+down",
+    "ctrl+shift+t",
+    "ctrl+shift+w",
+    "ctrl+shift+1",
+    "ctrl+shift+2",
+    "ctrl+shift+3",
+    "ctrl+shift+4",
+    "ctrl+shift+5",
+    "ctrl+shift+6",
+    "ctrl+shift+7",
+    "ctrl+shift+8",
+    "ctrl+shift+9",
+    "ctrl+shift++",
+    "ctrl+shift+-",
+    "ctrl+shift+0",
+    "ctrl+shift+s",
+    "ctrl+shift+l",
+    "shift+pageup",
+    "shift+pagedown",
+];
 
 const DOCUMENT: &str = "[font]
 family = \"Test Mono\"
@@ -42,13 +100,68 @@ blue = \"#7AA6DA\"
 magenta = \"#C397D8\"
 cyan = \"#70C0B1\"
 white = \"#EAEAEA\"
+
+[keys]
+paste = \"ctrl+shift+v\"
+copy = \"ctrl+shift+c\"
+copy-output = \"ctrl+shift+o\"
+search = \"ctrl+shift+f\"
+previous-prompt = \"ctrl+shift+up\"
+next-prompt = \"ctrl+shift+down\"
+new-tab = \"ctrl+shift+t\"
+close-tab = \"ctrl+shift+w\"
+tab-1 = \"ctrl+shift+1\"
+tab-2 = \"ctrl+shift+2\"
+tab-3 = \"ctrl+shift+3\"
+tab-4 = \"ctrl+shift+4\"
+tab-5 = \"ctrl+shift+5\"
+tab-6 = \"ctrl+shift+6\"
+tab-7 = \"ctrl+shift+7\"
+tab-8 = \"ctrl+shift+8\"
+tab-9 = \"ctrl+shift+9\"
+zoom-in = \"ctrl+shift++\"
+zoom-out = \"ctrl+shift+-\"
+zoom-reset = \"ctrl+shift+0\"
+save-settings = \"ctrl+shift+s\"
+load-settings = \"ctrl+shift+l\"
+page-up = \"shift+pageup\"
+page-down = \"shift+pagedown\"
 ";
+
+fn portable() -> Keys {
+    let mut keys = Keys::default();
+    for action in Action::ALL {
+        let shortcut = keys.get(action).map(|shortcut| Shortcut {
+            modifiers: if shortcut.modifiers == Modifiers::SHIFT {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::CTRL | Modifiers::SHIFT
+            },
+            ..shortcut
+        });
+        keys.set(action, shortcut);
+    }
+    keys
+}
 
 fn sample() -> Config {
     Config {
         font_family: "Test Mono".to_owned(),
+        keys: portable(),
         ..Config::default()
     }
+}
+
+fn chord(modifiers: Modifiers, key: Key) -> Shortcut {
+    Shortcut { modifiers, key }
+}
+
+fn bound(text: &str, action: Action) -> Option<Shortcut> {
+    Config::from_toml(text).unwrap().keys.get(action)
+}
+
+fn read(text: &str, action: Action) -> Shortcut {
+    bound(text, action).unwrap()
 }
 
 fn rejected(text: &str) -> (usize, String) {
@@ -247,7 +360,7 @@ fn unknown_color_name_is_rejected() {
 
 #[test]
 fn section_that_is_not_a_table_is_rejected() {
-    for section in ["font", "window", "scrollback", "colors"] {
+    for section in ["font", "window", "scrollback", "colors", "keys"] {
         assert_eq!(
             rejected(&format!("{section} = 1")),
             refusal(1, &format!("`{section}` must be a table"))
@@ -348,6 +461,343 @@ fn malformed_named_color_is_rejected() {
 }
 
 #[test]
+fn default_keys_are_the_platform_shortcuts() {
+    assert_eq!(
+        Action::ALL.map(|action| Keys::default()
+            .get(action)
+            .map_or_default(|shortcut| shortcut.to_string())),
+        DEFAULT_SHORTCUTS
+    );
+}
+
+#[test]
+fn default_config_carries_the_default_keys() {
+    assert_eq!(Config::default().keys, Keys::default());
+}
+
+#[test]
+fn action_names_are_the_keys_of_the_keys_table() {
+    assert_eq!(
+        Action::ALL.map(Action::name),
+        [
+            "paste",
+            "copy",
+            "copy-output",
+            "search",
+            "previous-prompt",
+            "next-prompt",
+            "new-tab",
+            "close-tab",
+            "tab-1",
+            "tab-2",
+            "tab-3",
+            "tab-4",
+            "tab-5",
+            "tab-6",
+            "tab-7",
+            "tab-8",
+            "tab-9",
+            "zoom-in",
+            "zoom-out",
+            "zoom-reset",
+            "save-settings",
+            "load-settings",
+            "page-up",
+            "page-down",
+        ]
+    );
+}
+
+#[test]
+fn modifiers_contain_their_parts_and_nothing_else() {
+    let held = Modifiers::CTRL | Modifiers::ALT;
+    assert!(held.contains(Modifiers::CTRL));
+    assert!(held.contains(Modifiers::ALT));
+    assert!(held.contains(Modifiers::NONE));
+    assert!(!held.contains(Modifiers::CTRL | Modifiers::SHIFT));
+    assert!(!held.contains(Modifiers::CMD));
+}
+
+#[test]
+fn modifiers_count_their_parts() {
+    assert_eq!(Modifiers::NONE.count(), 0);
+    assert_eq!((Modifiers::CMD | Modifiers::SHIFT).count(), 2);
+    assert_eq!((Modifiers::CMD | Modifiers::CMD).count(), 1);
+}
+
+#[test]
+fn keys_set_replaces_one_shortcut() {
+    let mut keys = Keys::default();
+    keys.set(Action::Copy, None);
+    assert_eq!(keys.get(Action::Copy), None);
+    assert_eq!(keys.get(Action::Paste), Keys::default().get(Action::Paste));
+}
+
+#[test]
+fn shortcut_display_writes_the_modifiers_in_a_fixed_order() {
+    assert_eq!(
+        chord(
+            Modifiers::ALT | Modifiers::SHIFT | Modifiers::CTRL | Modifiers::CMD,
+            Key::Character('k')
+        )
+        .to_string(),
+        "cmd+ctrl+shift+alt+k"
+    );
+}
+
+#[test]
+fn shortcut_display_writes_the_name_of_a_named_key() {
+    assert_eq!(
+        chord(Modifiers::NONE, Key::Named(Named::PageDown)).to_string(),
+        "pagedown"
+    );
+}
+
+#[test]
+fn keys_are_read() {
+    assert_eq!(
+        read("[keys]\ncopy = \"alt+c\"", Action::Copy),
+        chord(Modifiers::ALT, Key::Character('c'))
+    );
+}
+
+#[test]
+fn keys_left_out_keep_their_defaults() {
+    assert_eq!(
+        bound("[keys]\ncopy = \"alt+c\"", Action::Paste),
+        Keys::default().get(Action::Paste)
+    );
+}
+
+#[test]
+fn key_without_modifiers_is_read() {
+    assert_eq!(
+        read("keys.search = \"f5\"", Action::Search),
+        chord(Modifiers::NONE, Key::Named(Named::F5))
+    );
+}
+
+#[test]
+fn shortcut_names_ignore_case() {
+    assert_eq!(
+        read("keys.page-up = \"CTRL+Shift+PageUp\"", Action::PageUp),
+        chord(
+            Modifiers::CTRL | Modifiers::SHIFT,
+            Key::Named(Named::PageUp)
+        )
+    );
+}
+
+#[test]
+fn letter_key_is_kept_in_lowercase() {
+    assert_eq!(
+        read("keys.copy = \"ctrl+C\"", Action::Copy),
+        chord(Modifiers::CTRL, Key::Character('c'))
+    );
+}
+
+#[test]
+fn plus_key_follows_the_last_plus() {
+    assert_eq!(
+        read("keys.zoom-in = \"cmd++\"", Action::ZoomIn),
+        chord(Modifiers::CMD, Key::Character('+'))
+    );
+}
+
+#[test]
+fn lone_plus_is_the_plus_key() {
+    assert_eq!(
+        read("keys.zoom-in = \"+\"", Action::ZoomIn),
+        chord(Modifiers::NONE, Key::Character('+'))
+    );
+}
+
+#[test]
+fn every_named_key_is_read_by_its_name() {
+    for (name, named) in [
+        ("up", Named::Up),
+        ("down", Named::Down),
+        ("left", Named::Left),
+        ("right", Named::Right),
+        ("pageup", Named::PageUp),
+        ("pagedown", Named::PageDown),
+        ("home", Named::Home),
+        ("end", Named::End),
+        ("enter", Named::Enter),
+        ("tab", Named::Tab),
+        ("escape", Named::Escape),
+        ("space", Named::Space),
+        ("backspace", Named::Backspace),
+        ("delete", Named::Delete),
+        ("insert", Named::Insert),
+        ("f1", Named::F1),
+        ("f2", Named::F2),
+        ("f3", Named::F3),
+        ("f4", Named::F4),
+        ("f5", Named::F5),
+        ("f6", Named::F6),
+        ("f7", Named::F7),
+        ("f8", Named::F8),
+        ("f9", Named::F9),
+        ("f10", Named::F10),
+        ("f11", Named::F11),
+        ("f12", Named::F12),
+    ] {
+        assert_eq!(
+            read(&format!("keys.copy = \"alt+{name}\""), Action::Copy),
+            chord(Modifiers::ALT, Key::Named(named))
+        );
+        assert_eq!(
+            chord(Modifiers::ALT, Key::Named(named)).to_string(),
+            format!("alt+{name}")
+        );
+    }
+}
+
+#[test]
+fn empty_string_leaves_the_action_without_a_shortcut() {
+    assert_eq!(bound("keys.copy = \"\"", Action::Copy), None);
+}
+
+#[test]
+fn swapped_shortcuts_are_accepted() {
+    let config =
+        Config::from_toml("[keys]\npaste = \"ctrl+shift+c\"\ncopy = \"ctrl+shift+v\"").unwrap();
+    assert_eq!(
+        (
+            config.keys.get(Action::Paste),
+            config.keys.get(Action::Copy)
+        ),
+        (
+            Some(chord(
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::Character('c')
+            )),
+            Some(chord(
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::Character('v')
+            ))
+        )
+    );
+}
+
+#[test]
+fn to_toml_writes_an_empty_string_for_an_action_without_a_shortcut() {
+    let mut config = sample();
+    config.keys.set(Action::CloseTab, None);
+    assert!(config.to_toml().contains("\nclose-tab = \"\"\n"));
+}
+
+#[test]
+fn keys_with_quote_characters_survive_a_round_trip() {
+    let mut config = sample();
+    config.keys.set(
+        Action::Copy,
+        Some(chord(Modifiers::ALT, Key::Character('"'))),
+    );
+    config.keys.set(
+        Action::Paste,
+        Some(chord(Modifiers::ALT, Key::Character('\\'))),
+    );
+    assert!(config.to_toml().contains("\ncopy = \"alt+\\\"\"\n"));
+    assert!(config.to_toml().contains("\npaste = \"alt+\\\\\"\n"));
+    assert_eq!(Config::from_toml(&config.to_toml()), Ok(config));
+}
+
+#[test]
+fn unknown_action_is_rejected() {
+    assert_eq!(
+        rejected("[keys]\nquit = \"ctrl+q\""),
+        refusal(2, "unknown key `keys.quit`")
+    );
+}
+
+#[test]
+fn shortcut_that_is_not_a_string_is_rejected() {
+    assert_eq!(
+        rejected("keys.copy = 1"),
+        refusal(1, "`keys.copy` must be a string")
+    );
+}
+
+#[test]
+fn shortcut_ending_in_a_modifier_is_rejected() {
+    assert_eq!(
+        rejected("keys.copy = \"ctrl+\""),
+        refusal(1, "`keys.copy` must be a shortcut such as \"ctrl+shift+c\"")
+    );
+}
+
+#[test]
+fn unknown_modifier_is_rejected() {
+    assert_eq!(
+        rejected("keys.copy = \"meta+c\""),
+        refusal(
+            1,
+            "`keys.copy` must be a shortcut whose modifiers are cmd, ctrl, shift, or alt, not `meta`"
+        )
+    );
+}
+
+#[test]
+fn unknown_key_name_is_rejected() {
+    assert_eq!(
+        rejected("keys.copy = \"ctrl+f13\""),
+        refusal(
+            1,
+            "`keys.copy` must be a shortcut that ends in a known key, not `f13`"
+        )
+    );
+}
+
+#[test]
+fn key_outside_ascii_is_rejected() {
+    assert_eq!(
+        rejected("keys.copy = \"ctrl+\u{e9}\""),
+        refusal(
+            1,
+            "`keys.copy` must be a shortcut that ends in a known key, not `\u{e9}`"
+        )
+    );
+}
+
+#[test]
+fn shortcut_used_twice_in_the_file_is_rejected_at_the_second_use() {
+    assert_eq!(
+        rejected("[keys]\npaste = \"alt+p\"\n\ncopy = \"ALT+P\""),
+        refusal(
+            4,
+            "`keys.copy` must be a shortcut that `keys.paste` does not use"
+        )
+    );
+}
+
+#[test]
+fn shortcut_of_a_default_action_is_rejected() {
+    assert_eq!(
+        rejected(&format!("keys.copy = \"{}\"", DEFAULT_SHORTCUTS[0])),
+        refusal(
+            1,
+            "`keys.copy` must be a shortcut that `keys.paste` does not use"
+        )
+    );
+}
+
+#[test]
+fn load_keeps_the_keys_for_the_next_start() {
+    let directory = scratch("load-keys");
+    let (file, state) = (
+        directory.join("dartel.toml"),
+        directory.join("settings.bin"),
+    );
+    fs::write(&file, "[keys]\ncopy = \"alt+c\"\npaste = \"\"").unwrap();
+    let keys = load(&file, &state).unwrap().keys;
+    assert_eq!(active(&state).keys, keys);
+    assert_eq!(keys.get(Action::Paste), None);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn encoded_config_decodes_to_the_same_config() {
     let config = Config {
         font_family: "\u{30e1}\u{30a4}\u{30ea}\u{30aa}".to_owned(),
@@ -360,14 +810,45 @@ fn encoded_config_decodes_to_the_same_config() {
         background: Rgb::new(4, 5, 6),
         cursor: Rgb::new(7, 8, 9),
         ansi: std::array::from_fn(|index| Rgb::new(index as u8, 100, 200)),
+        keys: sample().keys,
     };
     assert_eq!(Config::decode(&config.encode()), Some(config));
 }
 
 #[test]
+fn encoded_keys_decode_to_the_same_keys() {
+    let mut keys = Keys::default();
+    keys.set(Action::Paste, None);
+    keys.set(
+        Action::Copy,
+        Some(chord(
+            Modifiers::CMD | Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT,
+            Key::Character('~'),
+        )),
+    );
+    keys.set(
+        Action::Search,
+        Some(chord(Modifiers::NONE, Key::Named(Named::F12))),
+    );
+    let config = Config {
+        keys,
+        ..Config::default()
+    };
+    assert_eq!(Config::decode(&config.encode()), Some(config));
+}
+
+#[test]
+fn encode_writes_two_bytes_for_each_action_before_the_font_family() {
+    let encoded = sample().encode();
+    assert_eq!(encoded.len(), 137 + "Test Mono".len());
+    assert_eq!(&encoded[89..91], &[6, b'v']);
+    assert_eq!(&encoded[133..137], &[4, 0x84, 4, 0x85]);
+}
+
+#[test]
 fn decode_rejects_a_truncated_state() {
     let encoded = sample().encode();
-    for length in [0, 7, 15, 23, 25, 27, 31, 88] {
+    for length in [0, 7, 15, 23, 25, 27, 31, 88, 136] {
         assert_eq!(Config::decode(&encoded[..length]), None);
     }
 }
@@ -375,7 +856,7 @@ fn decode_rejects_a_truncated_state() {
 #[test]
 fn decode_accepts_an_empty_font_family() {
     assert_eq!(
-        Config::decode(&sample().encode()[..89]),
+        Config::decode(&Config::default().encode()[..137]),
         Some(Config {
             font_family: String::new(),
             ..Config::default()
@@ -385,7 +866,45 @@ fn decode_accepts_an_empty_font_family() {
 
 #[test]
 fn decode_rejects_another_magic() {
-    assert_eq!(Config::decode(&patched(7, &[2])), None);
+    assert_eq!(Config::decode(&patched(7, &[1])), None);
+}
+
+#[test]
+fn decode_reads_two_zero_bytes_as_no_shortcut() {
+    assert_eq!(
+        Config::decode(&patched(89, &[0, 0]))
+            .unwrap()
+            .keys
+            .get(Action::Paste),
+        None
+    );
+}
+
+#[test]
+fn decode_rejects_modifiers_outside_the_four() {
+    assert_eq!(Config::decode(&patched(89, &[16, b'v'])), None);
+}
+
+#[test]
+fn decode_rejects_an_uppercase_letter() {
+    assert_eq!(Config::decode(&patched(89, &[6, b'V'])), None);
+}
+
+#[test]
+fn decode_rejects_a_byte_that_is_no_key() {
+    for key in [0, 0x20, 0x7F] {
+        assert_eq!(Config::decode(&patched(89, &[6, key])), None);
+    }
+}
+
+#[test]
+fn decode_rejects_a_named_key_past_the_list() {
+    assert_eq!(Config::decode(&patched(89, &[6, 0x80 + 27])), None);
+}
+
+#[test]
+fn decode_rejects_two_actions_with_one_shortcut() {
+    assert_eq!(Config::decode(&patched(89, &[6, b'c'])), None);
 }
 
 #[test]
@@ -418,7 +937,7 @@ fn decode_rejects_a_scrollback_outside_the_range() {
 
 #[test]
 fn decode_rejects_a_font_family_that_is_not_utf8() {
-    assert_eq!(Config::decode(&patched(89, &[0xFF])), None);
+    assert_eq!(Config::decode(&patched(137, &[0xFF])), None);
 }
 
 #[test]
@@ -585,8 +1104,9 @@ fn load_returns_the_config_and_keeps_it_as_the_active_one() {
     );
     fs::write(&file, "[font]\nfamily = \"Test Mono\"\nsize = 20").unwrap();
     let expected = Config {
+        font_family: "Test Mono".to_owned(),
         font_size: 20.0,
-        ..sample()
+        ..Config::default()
     };
     assert_eq!(load(&file, &state).unwrap(), expected);
     assert_eq!(active(&state), expected);
