@@ -72,9 +72,9 @@ pub struct Style {
 impl Style {
     #[inline]
     fn key(self) -> u128 {
-        u128::from(self.foreground.pack())
-            | u128::from(self.background.pack()) << 32
-            | u128::from(self.underline.pack()) << 64
+        u128::from(self.foreground.bits())
+            | u128::from(self.background.bits()) << 32
+            | u128::from(self.underline.bits()) << 64
             | u128::from(self.attrs.0) << 96
             | u128::from(self.link) << 112
     }
