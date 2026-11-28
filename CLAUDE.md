@@ -335,8 +335,15 @@ Build and test for that target run on the macOS CI job.
   set. `Scene::rasterize` sets `joiner` for a zero width joiner and `linker`
   for a skin tone modifier or a regional indicator, and
   `Scene::forget_glyphs` clears them, so a frame without these characters
-  pays one check. While `linker` is set, every rebuilt line is scanned by
-  `candidates`, so keep that scan free of branches. `Scene::unite_glyphs` reads
+  pays one check. `Scene::compose` makes that check and the check of
+  `Fonts::ligatures` itself, before it calls `Scene::unite_rows` and
+  `Scene::ligate_rows`, because a call that returns at once still costs every
+  frame. A frame that rebuilds every line and finds no line with
+  such a character clears them too, and drops the glyphs of those characters
+  from the glyph cache, because a clear flag with such a glyph still cached
+  would leave its sequences apart. While `linker` is set, every rebuilt line
+  is scanned by `candidates`, so keep that scan free of branches.
+  `Scene::unite_glyphs` reads
   the glyph cache through `Scene::cached` and the marks through
   `Row::mark_entries`, and `Fonts::unite` finds the face through
   `Fonts::drawing`, so `Scene::glyph`, `Row::marks`, and `Fonts::resolve`
