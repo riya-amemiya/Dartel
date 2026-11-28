@@ -1,11 +1,10 @@
-use std::collections::VecDeque;
-
 use super::cell::Cell;
 use super::row::{Logical, PROMPT, Row};
 
 #[derive(Clone, Debug)]
 pub struct Grid {
-    rows: VecDeque<Row>,
+    rows: Vec<Row>,
+    head: usize,
     lines: usize,
     cols: usize,
     history_limit: usize,
@@ -17,6 +16,7 @@ impl Grid {
             rows: (0..lines)
                 .map(|_| Row::new(cols, Cell::default()))
                 .collect(),
+            head: 0,
             lines,
             cols,
             history_limit,
@@ -48,32 +48,114 @@ impl Grid {
     }
 
     #[inline]
+    fn slot(&self, index: usize) -> usize {
+        assert!(index < self.rows.len());
+        let slot = self.head + index;
+        if slot < self.rows.len() {
+            slot
+        } else {
+            slot - self.rows.len()
+        }
+    }
+
+    #[inline]
     #[must_use]
     pub fn row(&self, line: usize) -> &Row {
-        &self.rows[self.rows.len() - self.lines + line]
+        &self.rows[self.slot(self.history() + line)]
     }
 
     #[inline]
     #[must_use]
     pub fn absolute(&self, index: usize) -> &Row {
-        &self.rows[index]
+        &self.rows[self.slot(index)]
     }
 
     pub fn rows(&self) -> impl Iterator<Item = &Row> {
-        self.rows.iter()
+        self.rows[self.head..].iter().chain(&self.rows[..self.head])
     }
 
     #[inline]
     pub(super) fn row_mut(&mut self, line: usize) -> &mut Row {
-        let index = self.rows.len() - self.lines + line;
-        &mut self.rows[index]
+        let slot = self.slot(self.history() + line);
+        &mut self.rows[slot]
     }
 
     pub(super) fn rows_mut(&mut self) -> impl Iterator<Item = &mut Row> {
-        self.rows.iter_mut()
+        let (wrapped, leading) = self.rows.split_at_mut(self.head);
+        leading.iter_mut().chain(wrapped)
     }
 
+    fn settle(&mut self) {
+        self.rows.rotate_left(self.head);
+        self.head = 0;
+    }
+
+    fn swap(&mut self, first: usize, second: usize) {
+        let (first, second) = (self.slot(first), self.slot(second));
+        self.rows.swap(first, second);
+    }
+
+    #[inline]
+    fn recycle(&mut self, blank: Cell) {
+        self.rows[self.head].reset(self.cols, blank);
+        self.head = if self.head + 1 == self.rows.len() {
+            0
+        } else {
+            self.head + 1
+        };
+    }
+
+    fn feed(&mut self, blank: Cell) {
+        if self.history() >= self.history_limit {
+            self.recycle(blank);
+        } else {
+            self.settle();
+            self.rows.push(Row::new(self.cols, blank));
+        }
+    }
+
+    fn roll(&mut self, top: usize, bottom: usize, count: usize, down: bool) {
+        let base = self.history();
+        let (first, last) = (self.slot(base + top), self.slot(base + bottom));
+        if first <= last {
+            if down {
+                self.rows[first..=last].rotate_right(count);
+            } else {
+                self.rows[first..=last].rotate_left(count);
+            }
+        } else if down {
+            for line in (top + count..=bottom).rev() {
+                self.swap(base + line, base + line - count);
+            }
+        } else {
+            for line in top..bottom + 1 - count {
+                self.swap(base + line, base + line + count);
+            }
+        }
+    }
+
+    #[inline]
     pub(super) fn scroll_up(
+        &mut self,
+        top: usize,
+        bottom: usize,
+        count: usize,
+        blank: Cell,
+        keep: bool,
+    ) -> usize {
+        if count == 1
+            && top == 0
+            && bottom + 1 == self.lines
+            && self.history() == self.history_limit
+            && (keep || self.history_limit == 0)
+        {
+            self.recycle(blank);
+            return usize::from(self.history_limit > 0);
+        }
+        self.shift_up(top, bottom, count, blank, keep)
+    }
+
+    fn shift_up(
         &mut self,
         top: usize,
         bottom: usize,
@@ -84,61 +166,58 @@ impl Grid {
         let count = count.min(bottom + 1 - top);
         if keep && top == 0 && self.history_limit > 0 {
             for _ in 0..count {
-                let row = if self.history() == self.history_limit {
-                    self.rows.pop_front().map_or_else(
-                        || Row::new(self.cols, blank),
-                        |mut row| {
-                            row.reset(self.cols, blank);
-                            row
-                        },
-                    )
-                } else {
-                    Row::new(self.cols, blank)
-                };
-                self.rows
-                    .insert(self.rows.len() + 1 + bottom - self.lines, row);
+                self.feed(blank);
+                for index in (self.history() + bottom..self.rows.len() - 1).rev() {
+                    self.swap(index, index + 1);
+                }
             }
             return count;
         }
-        let base = self.history();
-        for line in top..bottom + 1 - count {
-            self.rows.swap(base + line, base + line + count);
+        if top == 0 && bottom + 1 == self.lines && self.history() == 0 {
+            for _ in 0..count {
+                self.recycle(blank);
+            }
+            return 0;
         }
+        self.roll(top, bottom, count, false);
         for line in bottom + 1 - count..=bottom {
-            self.rows[base + line].reset(self.cols, blank);
+            self.wipe(line, blank);
         }
         0
     }
 
+    fn wipe(&mut self, line: usize, blank: Cell) {
+        let slot = self.slot(self.history() + line);
+        self.rows[slot].reset(self.cols, blank);
+    }
+
     pub(super) fn scroll_down(&mut self, top: usize, bottom: usize, count: usize, blank: Cell) {
         let count = count.min(bottom + 1 - top);
-        let base = self.history();
-        for line in (top + count..=bottom).rev() {
-            self.rows.swap(base + line, base + line - count);
-        }
+        self.roll(top, bottom, count, true);
         for line in top..top + count {
-            self.rows[base + line].reset(self.cols, blank);
+            self.wipe(line, blank);
         }
     }
 
     pub(super) fn tag_prompt(&mut self, line: usize, tags: u8) -> bool {
         let found = (0..=self.history() + line)
             .rev()
-            .find(|&index| self.rows[index].tags() & PROMPT != 0);
+            .find(|&index| self.absolute(index).tags() & PROMPT != 0);
         if let Some(index) = found {
-            self.rows[index].tag(tags);
+            let slot = self.slot(index);
+            self.rows[slot].tag(tags);
         }
         found.is_some()
     }
 
     pub(super) fn clear(&mut self, blank: Cell) {
-        let base = self.history();
-        for row in self.rows.range_mut(base..) {
-            row.reset(self.cols, blank);
+        for line in 0..self.lines {
+            self.wipe(line, blank);
         }
     }
 
     pub(super) fn clear_history(&mut self) {
+        self.settle();
         self.rows.drain(..self.rows.len() - self.lines);
     }
 
@@ -150,6 +229,7 @@ impl Grid {
         blank: Cell,
         reflow: bool,
     ) -> (usize, usize) {
+        self.settle();
         let (line, column) = if reflow && cols != self.cols {
             self.reflow(cols, cursor, blank)
         } else {
@@ -170,7 +250,7 @@ impl Grid {
         self.rows
             .drain(..self.history().saturating_sub(self.history_limit));
         let base = self.history();
-        for row in self.rows.range_mut(base..) {
+        for row in &mut self.rows[base..] {
             row.resize(cols, blank);
         }
         (line, column.min(cols - 1))
@@ -179,13 +259,13 @@ impl Grid {
     fn reflow(&mut self, cols: usize, cursor: (usize, usize), blank: Cell) -> (usize, usize) {
         let target = self.history() + cursor.0;
         while self.rows.len() > target + 1
-            && self.rows.back().is_some_and(|row| {
+            && self.rows.last().is_some_and(|row| {
                 row.occupied() == 0 && !row.is_wrapped() && row.tiles().is_empty()
             })
         {
-            self.rows.pop_back();
+            self.rows.pop();
         }
-        let mut rows = VecDeque::with_capacity(self.rows.len());
+        let mut rows = Vec::with_capacity(self.rows.len());
         let mut logical = Logical::default();
         let mut offset = None;
         let mut placed = (0, 0);
@@ -224,7 +304,7 @@ impl Grid {
 }
 
 fn split(
-    rows: &mut VecDeque<Row>,
+    rows: &mut Vec<Row>,
     logical: &mut Logical,
     cols: usize,
     blank: Cell,
@@ -246,7 +326,7 @@ fn split(
         {
             placed = Some((rows.len(), (offset - start).min(cols - 1)));
         }
-        rows.push_back(Row::assemble(
+        rows.push(Row::assemble(
             &cells[start..end],
             marks
                 .iter()

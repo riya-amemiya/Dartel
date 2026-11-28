@@ -71,9 +71,14 @@ impl<'a> Iterator for ParamsIter<'a> {
             return None;
         }
         let start = self.index;
-        self.index = (start + 1..self.params.len())
-            .find(|&index| self.params.subs & (1 << index) == 0)
-            .unwrap_or(self.params.len());
+        self.index = start
+            + 1
+            + self
+                .params
+                .subs
+                .checked_shr(start as u32 + 1)
+                .unwrap_or(0)
+                .trailing_ones() as usize;
         Some(&self.params.values[start..self.index])
     }
 }

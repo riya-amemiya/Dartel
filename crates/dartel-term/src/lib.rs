@@ -75,6 +75,8 @@ struct Pen {
     id: StyleId,
     blank: StyleId,
     blank_background: Color,
+    stale: bool,
+    blank_stale: bool,
 }
 
 #[derive(Clone, Debug, Default)]

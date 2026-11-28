@@ -24,23 +24,17 @@ impl Perform for Term {
         self.write_ascii(bytes);
     }
 
+    #[inline]
+    fn print_chars(&mut self, chars: &[char]) {
+        self.write_chars(chars);
+    }
+
+    #[inline]
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x07 => self.outbox.bell = true,
-            0x08 => self.backspace(),
-            0x09 => self.tab(1),
-            0x0A..=0x0C => {
-                self.linefeed();
-                if self.modes.contains(Modes::NEWLINE) {
-                    self.carriage_return();
-                }
-            }
+            0x0A..=0x0C => self.newline(),
             0x0D => self.carriage_return(),
-            0x0E | 0x0F => {
-                self.shift = usize::from(byte == 0x0E);
-                self.refresh_fast_print();
-            }
-            _ => {}
+            _ => self.control(byte),
         }
     }
 
@@ -180,6 +174,26 @@ impl Perform for Term {
 }
 
 impl Term {
+    fn newline(&mut self) {
+        self.linefeed();
+        if self.modes.contains(Modes::NEWLINE) {
+            self.carriage_return();
+        }
+    }
+
+    fn control(&mut self, byte: u8) {
+        match byte {
+            0x07 => self.outbox.bell = true,
+            0x08 => self.backspace(),
+            0x09 => self.tab(1),
+            0x0E | 0x0F => {
+                self.shift = usize::from(byte == 0x0E);
+                self.refresh_fast_print();
+            }
+            _ => {}
+        }
+    }
+
     fn set_ansi_mode(&mut self, mode: u16, enable: bool) {
         match mode {
             4 => {

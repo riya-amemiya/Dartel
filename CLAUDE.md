@@ -189,7 +189,16 @@ Build and test for that target run on the macOS CI job.
 
 ## Invariants
 
-- `Cell` is 8 bytes. Do not add a field without measuring throughput.
+- `Cell` is 8 bytes, one `u64` whose zero value is the default cell. Do not
+  add a field without measuring throughput.
+- `Row::used` is an upper bound on the leading cells that differ from the
+  default cell, and `Row::wide` is set once a wide character was written.
+  Every method of `Row` that writes cells keeps both, because clearing a row
+  and the check for a split wide character rely on them.
+- `Grid` is a ring. `Grid::slot` maps a row index to its place in the `Vec`,
+  and a method that changes the number of rows calls `Grid::settle` first.
+- A change to `pen.style` is followed by `Term::restyle`, which makes the next
+  character intern the style again.
 - A wide character is a wide cell followed by a spacer cell. Row edits go
   through `Row::release`, which blanks the other half of a split wide
   character and drops combining marks in the edited range.
@@ -329,9 +338,11 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
 
 - macOS is the first priority. A change keeps both CI targets passing.
 - Measure throughput before and after touching the hot paths, which are
-  `Parser::ground`, `Term::write_ascii`, `Row::write_ascii`, and
-  `Scene::compose_row`. Timing `seq 1 1000000` inside a release build of the
-  window is a quick check.
+  `Parser::ground`, `Parser::csi`, `Term::write_ascii`, `Term::write_chars`,
+  `Row::write_ascii`, `Grid::scroll_up`, and `Scene::compose_row`. Timing
+  `seq 1 1000000` inside a release build of the window is a quick check. The
+  PTY of the kernel limits that number, so compare the parser and the grid
+  by feeding the same bytes to `Parser::advance` outside the window.
 - The search foundation of happy-cracking is `pub(crate)` and cannot be a
   dependency. Its designs are ported instead, and `docs/architecture.md` lists
   them.

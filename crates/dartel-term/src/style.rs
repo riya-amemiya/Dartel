@@ -14,6 +14,16 @@ impl StyleId {
     pub const fn index(self) -> usize {
         self.0 as usize
     }
+
+    #[inline]
+    pub(super) const fn raw(self) -> u16 {
+        self.0
+    }
+
+    #[inline]
+    pub(super) const fn from_raw(raw: u16) -> StyleId {
+        StyleId(raw)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -97,10 +107,13 @@ impl Hasher for Mixer {
     }
 }
 
+const RECENT: usize = 16;
+
 #[derive(Clone, Debug)]
 pub(super) struct StyleTable {
     styles: Vec<Style>,
     ids: HashMap<u128, StyleId, BuildHasherDefault<Mixer>>,
+    recent: [(u128, StyleId); RECENT],
 }
 
 impl StyleTable {
@@ -108,6 +121,7 @@ impl StyleTable {
         StyleTable {
             styles: vec![Style::default()],
             ids: HashMap::from_iter([(Style::default().key(), StyleId::DEFAULT)]),
+            recent: [(Style::default().key(), StyleId::DEFAULT); RECENT],
         }
     }
 
@@ -121,12 +135,20 @@ impl StyleTable {
     }
 
     pub(super) fn intern(&mut self, style: Style) -> Option<StyleId> {
-        if let Some(&id) = self.ids.get(&style.key()) {
-            return Some(id);
+        let key = style.key();
+        let slot = (key ^ key >> 29 ^ key >> 61 ^ key >> 93) as usize % RECENT;
+        if self.recent[slot].0 == key {
+            return Some(self.recent[slot].1);
         }
-        let id = StyleId(u16::try_from(self.styles.len()).ok()?);
-        self.styles.push(style);
-        self.ids.insert(style.key(), id);
+        let id = if let Some(&id) = self.ids.get(&key) {
+            id
+        } else {
+            let id = StyleId(u16::try_from(self.styles.len()).ok()?);
+            self.styles.push(style);
+            self.ids.insert(key, id);
+            id
+        };
+        self.recent[slot] = (key, id);
         Some(id)
     }
 
