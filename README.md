@@ -22,7 +22,7 @@ Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With 
 - Links from OSC 8, and URLs and file paths that open with a click
 - Mouse reporting, bracketed paste, focus events, synchronized updates, and the alternate screen
 - IME input
-- Selection by drag, word, or line, and copy and paste through the system clipboard
+- Selection by drag, rectangle, word, or line, and copy and paste through the system clipboard
 
 ## Build and run
 
@@ -53,6 +53,7 @@ On Linux, Dartel needs a Vulkan or OpenGL ES driver, and copy and paste use `wl-
 | Load the settings from a file | Command+L | Ctrl+Shift+L |
 | Scroll one page | Shift+PageUp, Shift+PageDown | Shift+PageUp, Shift+PageDown |
 | Open the link, URL, or path under the pointer | Command+click | Ctrl+Shift+click |
+| Select a rectangle | Option+drag | Alt+drag |
 
 While the search prompt is open, Enter moves to the previous match, Shift+Enter moves to the next match, and Escape closes the prompt. A query is a regex, and it is matched as plain text when it does not compile. Matching ignores case unless the query contains an uppercase letter.
 
@@ -65,6 +66,8 @@ A new tab starts a login shell in the directory of the active tab when its shell
 ## Selection
 
 Drag with the left button to select text. A double click selects a word, and a triple click selects a line together with the rows it wraps onto. Hold Shift when the application has enabled mouse reporting.
+
+Drag with Option held on macOS, or with Alt held on Linux, to select a rectangle. The modifier counts when the drag starts. The cells under the start and the end of the drag are opposite corners, and a wide character cut by the left or the right side is selected whole. The copy holds the selected part of each row, top to bottom, with a line break between rows, and leaves out the blank cells after the end of a row. While the application has enabled mouse reporting, hold Shift as well.
 
 ## Shell integration
 

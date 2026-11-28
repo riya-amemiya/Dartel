@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dartel_term::{
-    Attrs, Color, CursorShape, Modes, Palette, Picture, Rgb, Span, Style, StyleId, Term, Tile,
+    Attrs, Color, CursorShape, Modes, Palette, Picture, Rgb, Selection, Span, Style, StyleId, Term,
+    Tile,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -44,7 +45,7 @@ pub struct Overlay<'a> {
     pub focused: bool,
     pub caret: bool,
     pub preedit: &'a str,
-    pub selection: Option<Span>,
+    pub selection: Option<Selection>,
     pub matches: &'a [Span],
     pub current: Option<Span>,
     pub banner: Option<&'a str>,
@@ -416,8 +417,14 @@ impl Scene {
         if let Some(span) = overlay.current {
             self.highlight(term, span, term.palette().indexed(3), CURRENT_ALPHA);
         }
-        if let Some(span) = overlay.selection {
-            self.highlight(term, span, term.palette().foreground, SELECTION_ALPHA);
+        match overlay.selection {
+            Some(Selection::Stream(span)) => {
+                self.highlight(term, span, term.palette().foreground, SELECTION_ALPHA);
+            }
+            Some(Selection::Block(span)) => {
+                self.highlight_block(term, span, term.palette().foreground, SELECTION_ALPHA);
+            }
+            None => {}
         }
         if overlay.caret && overlay.preedit.is_empty() {
             self.compose_cursor(gpu, term, overlay.focused);
@@ -677,6 +684,25 @@ impl Scene {
                     self.padding + start as i32 * width,
                     self.top() + (line - first) as i32 * height,
                     (end - start) as i32 * width,
+                    height,
+                    color,
+                    alpha,
+                ));
+            }
+        }
+    }
+
+    fn highlight_block(&mut self, term: &Term, span: Span, color: Rgb, alpha: u8) {
+        let metrics = self.fonts.metrics();
+        let (width, height) = (metrics.width as i32, metrics.height as i32);
+        let first = term.grid().history() - term.display_offset();
+        for line in span.start.line.max(first)..=span.end.line.min(first + term.lines() - 1) {
+            let columns = term.block_columns(line, span);
+            if columns.start < columns.end {
+                self.quads.push(solid(
+                    self.padding + columns.start as i32 * width,
+                    self.top() + (line - first) as i32 * height,
+                    columns.len() as i32 * width,
                     height,
                     color,
                     alpha,

@@ -9,7 +9,7 @@ use dartel_config::{Config, FONT_SIZE, Locations};
 use dartel_pty::Size;
 use dartel_render::{Gpu, Overlay, Scene};
 use dartel_search::{Case, Query};
-use dartel_term::{Modes, Point, Span, Target};
+use dartel_term::{Modes, Point, Selection, Span, Target};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
@@ -70,8 +70,8 @@ struct Ask {
 struct Tab {
     session: Session,
     title: String,
-    anchor: Option<Point>,
-    selection: Option<Span>,
+    anchor: Option<(Point, bool)>,
+    selection: Option<Selection>,
     search: Option<Search>,
     held: Option<Instant>,
 }
@@ -413,13 +413,14 @@ impl View {
             _ => 1,
         };
         self.clicks = Some((Instant::now(), point, count));
+        let block = self.blocking();
         let tab = &mut self.tabs[self.active];
         tab.selection = match count {
-            2 => tab.session.term().word_at(point),
-            3 => Some(tab.session.term().line_at(point)),
+            2 => tab.session.term().word_at(point).map(Selection::Stream),
+            3 => Some(Selection::Stream(tab.session.term().line_at(point))),
             _ => None,
         };
-        tab.anchor = (count == 1).then_some(point);
+        tab.anchor = (count == 1).then_some((point, block));
         self.window.request_redraw();
     }
 
@@ -430,6 +431,10 @@ impl View {
         } else {
             state.control_key() && state.shift_key()
         }
+    }
+
+    fn blocking(&self) -> bool {
+        self.modifiers.state().alt_key()
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -693,11 +698,17 @@ impl View {
             }
             return;
         }
-        if let Some(anchor) = self.tabs[self.active].anchor {
+        if let Some((anchor, block)) = self.tabs[self.active].anchor {
             let head = self.pointed();
-            let selection = (anchor != head).then_some(Span {
-                start: anchor.min(head),
-                end: anchor.max(head),
+            let selection = (anchor != head).then(|| {
+                if block {
+                    Selection::Block(Span::block(anchor, head))
+                } else {
+                    Selection::Stream(Span {
+                        start: anchor.min(head),
+                        end: anchor.max(head),
+                    })
+                }
             });
             if selection != self.tabs[self.active].selection {
                 self.tabs[self.active].selection = selection;
@@ -764,8 +775,11 @@ impl View {
     }
 
     fn copy(&self) {
-        if let Some(span) = self.tabs[self.active].selection {
-            let text = self.session().term().text(span);
+        if let Some(selection) = self.tabs[self.active].selection {
+            let text = match selection {
+                Selection::Stream(span) => self.session().term().text(span),
+                Selection::Block(span) => self.session().term().block_text(span),
+            };
             clipboard::write(&text);
         }
     }

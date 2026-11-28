@@ -275,6 +275,75 @@ fn path_candidate_keeps_other_colons() {
 }
 
 #[test]
+fn block_text_joins_the_columns_of_each_row_with_line_breaks() {
+    let term = fed(3, 10, "abcdef\r\nghijkl\r\nmnopqr");
+    assert_eq!(
+        term.block_text(Span::block(at(0, 1), at(2, 3))),
+        "bcd\nhij\nnop"
+    );
+}
+
+#[test]
+fn block_text_accepts_the_corners_in_reverse_order() {
+    let term = fed(3, 10, "abcdef\r\nghijkl\r\nmnopqr");
+    assert_eq!(
+        term.block_text(Span::block(at(2, 3), at(0, 1))),
+        "bcd\nhij\nnop"
+    );
+}
+
+#[test]
+fn block_text_takes_a_wide_character_split_by_the_left_edge() {
+    let term = fed(1, 10, "a\u{3042}b");
+    assert_eq!(
+        term.block_text(Span::block(at(0, 2), at(0, 3))),
+        "\u{3042}b"
+    );
+}
+
+#[test]
+fn block_text_takes_a_wide_character_split_by_the_right_edge() {
+    let term = fed(1, 10, "a\u{3042}b");
+    assert_eq!(
+        term.block_text(Span::block(at(0, 0), at(0, 1))),
+        "a\u{3042}"
+    );
+}
+
+#[test]
+fn block_columns_widen_over_wide_characters_split_by_either_edge() {
+    let term = fed(1, 10, "a\u{3042}b\u{3044}");
+    assert_eq!(term.block_columns(0, Span::block(at(0, 2), at(0, 4))), 1..6);
+}
+
+#[test]
+fn block_text_keeps_combining_marks_with_their_cell() {
+    let term = fed(1, 10, "ae\u{0301}x");
+    assert_eq!(
+        term.block_text(Span::block(at(0, 1), at(0, 1))),
+        "e\u{0301}"
+    );
+}
+
+#[test]
+fn block_text_drops_the_blank_cells_after_the_end_of_a_row() {
+    let term = fed(2, 10, "abcdef\r\nab");
+    assert_eq!(term.block_text(Span::block(at(0, 1), at(1, 4))), "bcde\nb");
+}
+
+#[test]
+fn block_text_reads_history_rows() {
+    let term = fed(2, 10, "first\r\nsecond\r\nthird");
+    assert_eq!(term.block_text(Span::block(at(0, 0), at(1, 2))), "fir\nsec");
+}
+
+#[test]
+fn block_text_breaks_a_wrapped_row_at_the_rectangle() {
+    let term = fed(2, 5, "abcdefgh");
+    assert_eq!(term.block_text(Span::block(at(0, 1), at(1, 2))), "bc\ngh");
+}
+
+#[test]
 fn prompt_before_and_after_find_the_nearest_prompt_rows() {
     let term = fed(
         6,

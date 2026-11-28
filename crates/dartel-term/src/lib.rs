@@ -15,7 +15,7 @@ mod style;
 
 pub use cell::Cell;
 pub use color::{Color, Palette, Rgb};
-pub use find::{Point, Span, Target, path_candidate};
+pub use find::{Point, Selection, Span, Target, path_candidate};
 pub use graphics::{Picture, Tile};
 pub use grid::Grid;
 pub use modes::Modes;
