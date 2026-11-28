@@ -374,7 +374,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dartel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dartel-config",
  "dartel-pty",
@@ -387,25 +387,25 @@ dependencies = [
 
 [[package]]
 name = "dartel-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dartel-term",
 ]
 
 [[package]]
 name = "dartel-image"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "dartel-pty"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rustix 1.1.6",
 ]
 
 [[package]]
 name = "dartel-render"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dartel-term",
  "dartel-vt",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "dartel-search"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "memchr",
  "regex",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "dartel-term"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dartel-image",
  "dartel-search",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "dartel-vt"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "memchr",
 ]
