@@ -93,7 +93,7 @@ Dartel/
 │   │   │   └── compose.rs    # Time of one Scene::compose call over generated screens
 │   │   └── src/
 │   │       ├── lib.rs        # Exports
-│   │       ├── font.rs       # Font discovery, fallback, rasterization
+│   │       ├── font.rs       # System font scan, font discovery, fallback, rasterization
 │   │       ├── gpu.rs        # wgpu surface, glyph atlas, picture textures, draw calls
 │   │       ├── scene.rs      # Rows to quads, glyph cache, drawn box and block glyphs, pictures, overlays, tab bar
 │   │       └── shader.wgsl   # Vertex and fragment shader
@@ -107,7 +107,7 @@ Dartel/
 │       │   ├── dartel.fish   # fish_prompt and fish_preexec handlers
 │       │   └── dartel.zsh    # precmd and preexec hooks
 │       └── src/
-│           ├── main.rs       # config and shell subcommands, event loop start
+│           ├── main.rs       # config and shell subcommands, font scan and event loop start
 │           ├── app.rs        # winit handler, windows, tabs, selection, prompts, shortcuts
 │           ├── clipboard.rs  # Clipboard through the platform commands
 │           ├── input.rs      # Key event to byte sequence encoding
@@ -301,6 +301,10 @@ Build and test for that target run on the macOS CI job.
   `Fonts::fallbacks` do not hold, and `Fonts::preferred` holds the face ids of
   `font.fallback` resolved once in `Fonts::new`. Keep fallback work off the
   cached paths of `Scene::compose_row` and `Fonts::rasterize`.
+- `Library::load` scans the system font directories. `main` starts it on the
+  `dartel-fonts` thread before it builds the event loop, and `View::new` joins
+  the thread after the window exists. Keep the scan off the UI thread between
+  the start of the process and the first frame.
 - `Config::keys` holds parsed shortcuts, and no key event parses text. An
   `Action` has an entry in `ACTION_NAMES`, `Action::ALL`, and `DEFAULT_KEYS`
   at the same index, and an arm in `View::shortcut`. Adding one changes the

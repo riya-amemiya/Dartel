@@ -6,11 +6,12 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use dartel_config::{Action, Config, FONT_SIZE, Locations, Named, Shortcut};
 use dartel_pty::Size;
-use dartel_render::{Gpu, Overlay, Scene};
+use dartel_render::{Gpu, Library, Overlay, Scene};
 use dartel_search::{Case, Query};
 use dartel_term::{Modes, Point, Selection, Span, Target};
 use winit::application::ApplicationHandler;
@@ -50,6 +51,7 @@ pub struct App {
     proxy: EventLoopProxy<Signal>,
     config: Config,
     locations: Option<Locations>,
+    library: Option<JoinHandle<Library>>,
     spawned: Rc<Cell<u64>>,
     views: Vec<View>,
 }
@@ -151,8 +153,15 @@ fn pty_size(scene: &Scene, size: PhysicalSize<u32>) -> Size {
     }
 }
 
-fn scene(config: &Config, scale: f64) -> Option<Scene> {
+pub fn scan() -> io::Result<JoinHandle<Library>> {
+    thread::Builder::new()
+        .name("dartel-fonts".into())
+        .spawn(Library::load)
+}
+
+fn scene(library: Library, config: &Config, scale: f64) -> Option<Scene> {
     Scene::new(
+        library,
         &config.font_family,
         &config.font_fallback,
         (config.font_size * scale) as f32,
@@ -273,18 +282,24 @@ impl Transfer {
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<Signal>, config: Config, locations: Option<Locations>) -> App {
+    pub fn new(
+        proxy: EventLoopProxy<Signal>,
+        config: Config,
+        locations: Option<Locations>,
+        library: JoinHandle<Library>,
+    ) -> App {
         App {
             proxy,
             config,
             locations,
+            library: Some(library),
             spawned: Rc::new(Cell::new(0)),
             views: Vec::new(),
         }
     }
 
     fn view(
-        &self,
+        &mut self,
         event_loop: &ActiveEventLoop,
         directory: Option<PathBuf>,
     ) -> Result<View, Box<dyn Error>> {
@@ -293,6 +308,7 @@ impl App {
             self.proxy.clone(),
             self.config.clone(),
             self.locations.clone(),
+            self.library.take().map_or_else(scan, Ok)?,
             Rc::clone(&self.spawned),
             directory,
         )
@@ -340,13 +356,21 @@ impl View {
         proxy: EventLoopProxy<Signal>,
         config: Config,
         locations: Option<Locations>,
+        library: JoinHandle<Library>,
         spawned: Rc<Cell<u64>>,
         directory: Option<PathBuf>,
     ) -> Result<View, Box<dyn Error>> {
         let window = Arc::new(event_loop.create_window(attributes())?);
         window.set_ime_allowed(true);
         let scale = window.scale_factor();
-        let scene = scene(&config, scale).ok_or("no usable font was found")?;
+        let scene = scene(
+            library
+                .join()
+                .map_err(|_| "the system fonts could not be read")?,
+            &config,
+            scale,
+        )
+        .ok_or("no usable font was found")?;
         let padding = (config.padding * scale).round() as u32;
         let size = window
             .request_inner_size(PhysicalSize::new(
@@ -1060,7 +1084,7 @@ impl View {
     }
 
     fn apply(&mut self, config: Config) {
-        if let Some(scene) = scene(&config, self.window.scale_factor()) {
+        if let Some(scene) = scene(Library::load(), &config, self.window.scale_factor()) {
             self.scene = scene;
         }
         for tab in &self.tabs {

@@ -7,7 +7,7 @@ use dartel_term::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::font::{Fonts, Metrics, REGULAR};
+use crate::font::{Fonts, Library, Metrics, REGULAR};
 use crate::gpu::{ATLAS_SIZE, Gpu, Layer, Quad};
 
 const SELECTION_ALPHA: u8 = 80;
@@ -581,13 +581,14 @@ fn centering(span: i32, glyph: Glyph) -> i32 {
 impl Scene {
     #[must_use]
     pub fn new(
+        library: Library,
         font_family: &str,
         font_fallback: &[String],
         font_size: f32,
         padding: i32,
     ) -> Option<Scene> {
         Some(Scene {
-            fonts: Fonts::new(font_family, font_fallback, font_size)?,
+            fonts: Fonts::new(library, font_family, font_fallback, font_size)?,
             ascii: [[None; 128]; 4],
             glyphs: HashMap::new(),
             patterns: [None; 3],
