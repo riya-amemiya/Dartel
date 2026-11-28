@@ -70,6 +70,17 @@ pub struct Raster {
     pub pixels: Vec<u8>,
 }
 
+pub struct Library(Database);
+
+impl Library {
+    #[must_use]
+    pub fn load() -> Library {
+        let mut database = Database::new();
+        database.load_system_fonts();
+        Library(database)
+    }
+}
+
 pub struct Fonts {
     database: Database,
     faces: Vec<Face>,
@@ -91,9 +102,12 @@ fn premultiplied(mut pixels: Vec<u8>) -> Vec<u8> {
 }
 
 impl Fonts {
-    pub fn new(family: &str, fallback: &[String], size: f32) -> Option<Fonts> {
-        let mut database = Database::new();
-        database.load_system_fonts();
+    pub fn new(
+        Library(database): Library,
+        family: &str,
+        fallback: &[String],
+        size: f32,
+    ) -> Option<Fonts> {
         let regular = database
             .query(&Query {
                 families: &[Family::Name(family)],

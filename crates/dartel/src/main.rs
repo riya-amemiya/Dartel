@@ -29,12 +29,13 @@ fn locations() -> Result<Locations, Box<dyn Error>> {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    let library = app::scan()?;
     let locations = Locations::from_env();
     let config = locations
         .as_ref()
         .map_or_default(|locations| dartel_config::active(&locations.state));
     let event_loop = EventLoop::<Signal>::with_user_event().build()?;
-    let mut app = App::new(event_loop.create_proxy(), config, locations);
+    let mut app = App::new(event_loop.create_proxy(), config, locations, library);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

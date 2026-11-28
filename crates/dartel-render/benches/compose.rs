@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use dartel_render::{Overlay, Scene};
+use dartel_render::{Library, Overlay, Scene};
 use dartel_term::Term;
 use dartel_vt::Parser;
 
@@ -166,7 +166,7 @@ fn measure(scene: &mut Scene, load: &Load, setup: &Setup, width: u32) -> [f64; 3
 
 fn main() {
     let setup = setup();
-    let Some(mut scene) = Scene::new("", &[], FONT_SIZE, PADDING) else {
+    let Some(mut scene) = Scene::new(Library::load(), "", &[], FONT_SIZE, PADDING) else {
         eprintln!("no monospace font is installed");
         return;
     };

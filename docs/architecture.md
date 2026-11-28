@@ -90,6 +90,27 @@ frame that shows it. The key press requests a frame only when it changes
 something on the UI thread: it clears a selection, returns a scrolled view to
 the bottom, or restarts the blink while the cursor is hidden.
 
+One more thread, `dartel-fonts`, scans the system fonts. `main` starts it
+before it builds the event loop, and `View::new` joins it after the window
+exists, so the scan runs while winit connects to the display and creates the
+window.
+
+```mermaid
+sequenceDiagram
+    participant Main as UI thread
+    participant Fonts as dartel-fonts thread
+
+    Main->>Fonts: app scan
+    Fonts->>Fonts: Library load
+    Main->>Main: read the state file, build the event loop, create the window
+    Fonts-->>Main: Library on join
+    Main->>Main: Scene new, Gpu new, first frame
+```
+
+`App` keeps the handle of that thread for the first window. A later window
+starts the thread again before it creates its window. A settings load scans on
+the UI thread, where `View::apply` builds the new `Scene`.
+
 ## Windows
 
 `App` holds a list of `View`s, one per window. A `View` owns its window, its
@@ -678,6 +699,11 @@ flowchart TD
   outline one light stroke wide, mirrored for the left-pointing pair.
 - Glyphs for ASCII are cached in an array indexed by face and byte. Other
   glyphs are cached in a `HashMap` keyed by character and face.
+- `font::Library` is the list of the installed fonts, and `Library::load`
+  builds it by scanning the system font directories. `Fonts::new` takes a
+  `Library` and keeps it, so the caller chooses the thread of the scan. Each
+  `Scene` has a `Library` of its own, because loading a face changes its entry
+  in the list.
 - `font::Fonts` loads four faces of one family and finds a fallback face per
   character on first use. The family is the one in the settings when it is
   installed, and the platform list otherwise. Color glyphs are stored
