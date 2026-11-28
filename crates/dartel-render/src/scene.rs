@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use dartel_term::{Attrs, Color, CursorShape, Modes, Palette, Rgb, Span, Style, StyleId, Term};
+use dartel_term::{
+    Attrs, Color, CursorShape, Modes, Palette, Picture, Rgb, Span, Style, StyleId, Term, Tile,
+};
 use unicode_width::UnicodeWidthChar;
 
 use crate::font::{Fonts, Metrics, REGULAR};
-use crate::gpu::{ATLAS_SIZE, Gpu, Quad};
+use crate::gpu::{ATLAS_SIZE, Gpu, Layer, Quad};
 
 const SELECTION_ALPHA: u8 = 80;
 const MATCH_ALPHA: u8 = 90;
@@ -25,6 +28,7 @@ struct Glyph {
 struct Row {
     backgrounds: Vec<Quad>,
     glyphs: Vec<Quad>,
+    pictures: Vec<(Arc<Picture>, Quad)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,6 +70,7 @@ pub struct Scene {
     shelf: u32,
     rows: Vec<Row>,
     quads: Vec<Quad>,
+    layers: Vec<Layer>,
     padding: i32,
     bar: bool,
     stale: bool,
@@ -105,11 +110,15 @@ fn look(style: Style, palette: &Palette, reverse: bool) -> Look {
     } else {
         ink
     };
+    let mut attrs = style.attrs;
+    if style.link != 0 && !attrs.contains(Attrs::ANY_UNDERLINE) {
+        attrs.set(Attrs::UNDERLINE, true);
+    }
     Look {
         foreground: ink,
         background: (inverse || style.background != Color::Default).then_some(paper),
         underline: palette.resolve(style.underline, ink),
-        attrs: style.attrs,
+        attrs,
         face: usize::from(style.attrs.contains(Attrs::BOLD))
             + 2 * usize::from(style.attrs.contains(Attrs::ITALIC)),
     }
@@ -131,12 +140,40 @@ fn textured(x: i32, y: i32, glyph: Glyph, color: Rgb) -> Quad {
             glyph.size[0] as i16,
             glyph.size[1] as i16,
         ],
-        source: [glyph.origin[0], glyph.origin[1], 1, 0],
+        source: [
+            glyph.origin[0],
+            glyph.origin[1],
+            glyph.size[0],
+            glyph.size[1],
+        ],
         color: if glyph.colored {
             [u8::MAX; 4]
         } else {
             [color.r, color.g, color.b, u8::MAX]
         },
+    }
+}
+
+fn pictured(tile: &Tile, origin: [i32; 2], cell: [i32; 2]) -> Quad {
+    let edge = |offset: u32, axis: usize| {
+        origin[axis]
+            + (i64::from(offset) * i64::from(cell[axis]) / i64::from(tile.cell[axis])) as i32
+    };
+    let (left, top) = (edge(u32::from(tile.left), 0), edge(u32::from(tile.top), 1));
+    Quad {
+        rect: [
+            left as i16,
+            top as i16,
+            (edge(u32::from(tile.left) + tile.width, 0) - left) as i16,
+            (edge(u32::from(tile.top) + tile.height, 1) - top) as i16,
+        ],
+        source: [
+            tile.x as u16,
+            tile.y as u16,
+            tile.width as u16,
+            tile.height as u16,
+        ],
+        color: [u8::MAX; 4],
     }
 }
 
@@ -171,6 +208,7 @@ impl Scene {
             shelf: 0,
             rows: Vec::new(),
             quads: Vec::new(),
+            layers: Vec::new(),
             padding,
             bar: false,
             stale: true,
@@ -307,6 +345,37 @@ impl Scene {
     }
 
     #[must_use]
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    fn compose_pictures(&mut self) {
+        let mut pictures: Vec<&(Arc<Picture>, Quad)> =
+            self.rows.iter().flat_map(|row| &row.pictures).collect();
+        if pictures.is_empty() {
+            return;
+        }
+        pictures.sort_by_key(|(picture, _)| picture.serial);
+        self.layers.push(Layer {
+            picture: None,
+            count: self.quads.len() as u32,
+        });
+        for (picture, quad) in pictures {
+            match self.layers.last_mut() {
+                Some(Layer {
+                    picture: Some(last),
+                    count,
+                }) if Arc::ptr_eq(last, picture) => *count += 1,
+                _ => self.layers.push(Layer {
+                    picture: Some(Arc::clone(picture)),
+                    count: 1,
+                }),
+            }
+            self.quads.push(*quad);
+        }
+    }
+
+    #[must_use]
     pub fn cell_origin(&self, line: usize, column: usize) -> (i32, i32) {
         (
             self.padding + column as i32 * self.fonts.metrics().width as i32,
@@ -327,12 +396,14 @@ impl Scene {
         }
         self.stale = false;
         self.quads.clear();
+        self.layers.clear();
         for row in &self.rows {
             self.quads.extend_from_slice(&row.backgrounds);
         }
         for row in &self.rows {
             self.quads.extend_from_slice(&row.glyphs);
         }
+        self.compose_pictures();
         let first = term.grid().history() - term.display_offset();
         for span in overlay.matches[overlay
             .matches
@@ -389,6 +460,11 @@ impl Scene {
         if self.bar {
             self.compose_tabs(gpu, term.palette(), overlay);
         }
+        self.layers.push(Layer {
+            picture: None,
+            count: self.quads.len() as u32
+                - self.layers.iter().map(|layer| layer.count).sum::<u32>(),
+        });
     }
 
     fn compose_tabs(&mut self, gpu: &Gpu, palette: &Palette, overlay: &Overlay<'_>) {
@@ -454,6 +530,17 @@ impl Scene {
         let mut row = std::mem::take(&mut self.rows[line]);
         row.backgrounds.clear();
         row.glyphs.clear();
+        row.pictures.clear();
+        row.pictures.extend(source.tiles().iter().map(|tile| {
+            (
+                Arc::clone(&tile.picture),
+                pictured(
+                    tile,
+                    [self.padding + i32::from(tile.column) * width, top],
+                    [width, height],
+                ),
+            )
+        }));
         let mut current = (
             StyleId::DEFAULT,
             look(term.style(StyleId::DEFAULT), term.palette(), reverse),
@@ -544,6 +631,16 @@ impl Scene {
                 (term.cols() - start) as i32 * width,
                 height,
                 color,
+                u8::MAX,
+            ));
+        }
+        if source.is_failed() {
+            row.backgrounds.push(solid(
+                (self.padding - 2 * metrics.stroke as i32).max(0),
+                top,
+                2 * metrics.stroke as i32,
+                height,
+                term.palette().indexed(9),
                 u8::MAX,
             ));
         }

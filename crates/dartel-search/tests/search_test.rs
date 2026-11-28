@@ -1,4 +1,4 @@
-use dartel_search::{Case, Query, find_all};
+use dartel_search::{Case, Query, find_all, url_at};
 
 fn ranges(query: &Query, haystack: &str) -> Vec<(usize, usize)> {
     find_all(query, haystack.as_bytes(), usize::MAX)
@@ -199,4 +199,57 @@ fn large_haystacks_respect_the_limit() {
     let query = Query::literal("needle", Case::Sensitive).unwrap();
     assert_eq!(ranges(&query, &haystack)[..3], [(0, 6), (21, 27), (42, 48)]);
     assert_eq!(find_all(&query, haystack.as_bytes(), 5).len(), 5);
+}
+
+#[test]
+fn url_at_finds_the_url_around_the_offset() {
+    assert_eq!(url_at(b"see https://e.test/a b", 10), Some(4..20));
+    assert_eq!(url_at(b"see https://e.test/a b", 4), Some(4..20));
+    assert_eq!(url_at(b"see https://e.test/a b", 19), Some(4..20));
+}
+
+#[test]
+fn url_at_is_absent_outside_a_url() {
+    assert_eq!(url_at(b"see https://e.test/a b", 1), None);
+    assert_eq!(url_at(b"see https://e.test/a b", 20), None);
+    assert_eq!(url_at(b"no url here", 3), None);
+}
+
+#[test]
+fn url_at_picks_the_url_that_holds_the_offset() {
+    assert_eq!(url_at(b"http://a.test http://b.test", 16), Some(14..27));
+}
+
+#[test]
+fn url_at_accepts_the_known_schemes() {
+    for text in [
+        "http://a.test",
+        "https://a.test",
+        "ftp://a.test",
+        "file:///tmp/a",
+    ] {
+        assert_eq!(url_at(text.as_bytes(), 0), Some(0..text.len()));
+    }
+    assert_eq!(url_at(b"gopher://a.test", 9), None);
+}
+
+#[test]
+fn url_at_drops_trailing_punctuation() {
+    assert_eq!(url_at(b"https://e.test/a.", 0), Some(0..16));
+    assert_eq!(url_at(b"https://e.test/a?!,;:", 0), Some(0..16));
+}
+
+#[test]
+fn url_at_keeps_balanced_brackets_and_drops_unbalanced_ones() {
+    assert_eq!(url_at(b"https://e.test/a_(b)", 0), Some(0..20));
+    assert_eq!(url_at(b"(https://e.test/a)", 5), Some(1..17));
+    assert_eq!(url_at(b"https://e.test/a[1]", 0), Some(0..19));
+    assert_eq!(url_at(b"[https://e.test/a]", 5), Some(1..17));
+}
+
+#[test]
+fn url_at_stops_at_quotes_brackets_and_spaces() {
+    assert_eq!(url_at(b"\"https://e.test/a\" x", 3), Some(1..17));
+    assert_eq!(url_at(b"<https://e.test/a>", 3), Some(1..17));
+    assert_eq!(url_at(b"https://e.test/a\tb", 3), Some(0..16));
 }

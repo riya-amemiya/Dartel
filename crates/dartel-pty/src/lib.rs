@@ -5,14 +5,16 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 
 use rustix::io::{FdFlags, fcntl_setfd};
-use rustix::process::{ioctl_tiocsctty, setsid};
+use rustix::process::{Pid, Signal, ioctl_tiocsctty, kill_process_group, setsid};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::stdio::stdin;
+use rustix::system::uname;
 use rustix::termios::{InputModes, OptionalActions, Winsize, tcgetattr, tcsetattr, tcsetwinsize};
 
 #[cfg(target_os = "macos")]
@@ -51,7 +53,12 @@ pub fn start_directory(home: Option<OsString>) -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn login_shell() -> Command {
+pub fn host_name() -> String {
+    uname().nodename().to_string_lossy().into_owned()
+}
+
+#[must_use]
+pub fn login_shell(directory: Option<PathBuf>) -> Command {
     let shell = env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| DEFAULT_SHELL.into());
@@ -66,8 +73,10 @@ pub fn login_shell() -> Command {
         ))
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor");
-    if let Some(home) = start_directory(env::var_os("HOME")) {
-        command.current_dir(home);
+    if let Some(directory) = start_directory(directory.map(PathBuf::into_os_string))
+        .or_else(|| start_directory(env::var_os("HOME")))
+    {
+        command.current_dir(directory);
     }
     command
 }
@@ -81,6 +90,7 @@ impl Pty {
         let slave = OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(OpenptFlags::NOCTTY.bits() as i32)
             .open(OsStr::from_bytes(ptsname(&master, Vec::new())?.as_bytes()))?;
         tcsetwinsize(&slave, size.into())?;
         let mut attributes = tcgetattr(&slave)?;
@@ -121,5 +131,12 @@ impl Pty {
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         self.child.wait()
+    }
+
+    pub fn hangup(&self) -> io::Result<()> {
+        Ok(kill_process_group(
+            Pid::from_child(&self.child),
+            Signal::HUP,
+        )?)
     }
 }

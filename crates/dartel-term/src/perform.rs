@@ -3,7 +3,7 @@ use std::io::Write;
 use dartel_vt::{Params, Perform};
 
 use super::charset::Charset;
-use super::{CursorShape, Modes, Term};
+use super::{CursorShape, KEYBOARD_FLAGS, MAX_KEYBOARD_STACK, Modes, Term};
 
 fn raw(params: &Params, index: usize) -> u16 {
     params.iter().nth(index).map_or(0, |group| group[0])
@@ -102,7 +102,7 @@ impl Perform for Term {
             ([], b'b') => self.repeat(count(params, 0)),
             ([], b'c') => {
                 if raw(params, 0) == 0 {
-                    self.outbox.reply.extend_from_slice(b"\x1b[?62;22c");
+                    self.outbox.reply.extend_from_slice(b"\x1b[?62;4;22c");
                 }
             }
             ([b'>'], b'c') => {
@@ -131,23 +131,51 @@ impl Perform for Term {
                 self.set_scroll_region(usize::from(raw(params, 0)), usize::from(raw(params, 1)));
             }
             ([], b's') => self.save_cursor(),
-            ([], b't') => {
-                if raw(params, 0) == 18 {
-                    let _ = write!(
-                        self.outbox.reply,
-                        "\x1b[8;{};{}t",
-                        self.lines(),
-                        self.cols()
-                    );
-                }
-            }
+            ([], b't') => self.report_size(raw(params, 0)),
             ([], b'u') => self.restore_cursor(),
+            ([b'>'], b'u') => {
+                if self.keyboard.len() == MAX_KEYBOARD_STACK {
+                    self.keyboard.remove(0);
+                }
+                self.keyboard.push((raw(params, 0) & KEYBOARD_FLAGS) as u8);
+            }
+            ([b'<'], b'u') => {
+                self.keyboard
+                    .truncate(self.keyboard.len().saturating_sub(count(params, 0)));
+            }
+            ([b'='], b'u') => self.set_keyboard(
+                (raw(params, 0) & KEYBOARD_FLAGS) as u8,
+                raw(params, 1).max(1),
+            ),
+            ([b'?'], b'u') => {
+                let _ = write!(self.outbox.reply, "\x1b[?{}u", self.keyboard());
+            }
             _ => {}
         }
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         self.operating_system_command(params, bell_terminated);
+    }
+
+    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: u8) {
+        if !ignore && intermediates.is_empty() && action == b'q' {
+            self.sixel_begin(raw(params, 1) == 1);
+        }
+    }
+
+    fn put(&mut self, bytes: &[u8]) {
+        self.sixel_feed(bytes);
+    }
+
+    fn unhook(&mut self) {
+        self.sixel_end();
+    }
+
+    fn apc_dispatch(&mut self, payload: &[u8]) {
+        if let Some(command) = payload.strip_prefix(b"G") {
+            self.graphics_command(command);
+        }
     }
 }
 
@@ -213,12 +241,45 @@ impl Term {
         }
     }
 
+    fn report_size(&mut self, kind: u16) {
+        let [width, height] = self.graphics.cell().map(usize::from);
+        let _ = match kind {
+            14 => write!(
+                self.outbox.reply,
+                "\x1b[4;{};{}t",
+                self.lines() * height,
+                self.cols() * width
+            ),
+            16 => write!(self.outbox.reply, "\x1b[6;{height};{width}t"),
+            18 => write!(
+                self.outbox.reply,
+                "\x1b[8;{};{}t",
+                self.lines(),
+                self.cols()
+            ),
+            _ => Ok(()),
+        };
+    }
+
     fn report_private_mode(&mut self, mode: u16) {
         let _ = write!(
             self.outbox.reply,
             "\x1b[?{mode};{}$y",
             Modes::private(mode).map_or(0, |flag| 2 - u8::from(self.modes.contains(flag)))
         );
+    }
+
+    fn set_keyboard(&mut self, flags: u8, mode: u16) {
+        let next = match mode {
+            1 => flags,
+            2 => self.keyboard() | flags,
+            3 => self.keyboard() & !flags,
+            _ => return,
+        };
+        match self.keyboard.last_mut() {
+            Some(current) => *current = next,
+            None => self.keyboard.push(next),
+        }
     }
 
     fn set_cursor_style(&mut self, style: u16) {

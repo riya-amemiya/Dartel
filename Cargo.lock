@@ -393,6 +393,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dartel-image"
+version = "0.1.0"
+
+[[package]]
 name = "dartel-pty"
 version = "0.1.0"
 dependencies = [
@@ -423,6 +427,7 @@ dependencies = [
 name = "dartel-term"
 version = "0.1.0"
 dependencies = [
+ "dartel-image",
  "dartel-search",
  "dartel-vt",
  "umt_rust",

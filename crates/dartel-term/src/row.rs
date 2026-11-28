@@ -1,15 +1,39 @@
 use std::ops::Range;
 
 use super::cell::Cell;
+use super::graphics::Tile;
 use super::style::StyleId;
 
 const MAX_MARKS: usize = 8;
+
+pub(super) const PROMPT: u8 = 1;
+pub(super) const OUTPUT: u8 = 1 << 1;
+pub(super) const FAILED: u8 = 1 << 2;
 
 #[derive(Clone, Debug)]
 pub struct Row {
     cells: Vec<Cell>,
     marks: Vec<(u16, char)>,
+    tiles: Vec<Tile>,
     wrapped: bool,
+    tags: u8,
+}
+
+#[derive(Default)]
+pub(super) struct Logical {
+    pub(super) cells: Vec<Cell>,
+    pub(super) marks: Vec<(usize, char)>,
+    pub(super) tiles: Vec<(usize, Tile)>,
+    pub(super) tags: u8,
+}
+
+impl Logical {
+    pub(super) fn clear(&mut self) {
+        self.cells.clear();
+        self.marks.clear();
+        self.tiles.clear();
+        self.tags = 0;
+    }
 }
 
 impl Row {
@@ -17,39 +41,83 @@ impl Row {
         Row {
             cells: vec![blank; cols],
             marks: Vec::new(),
+            tiles: Vec::new(),
             wrapped: false,
+            tags: 0,
         }
     }
 
     pub(super) fn assemble(
         cells: &[Cell],
         marks: impl Iterator<Item = (u16, char)>,
+        tiles: Vec<Tile>,
         cols: usize,
         blank: Cell,
         wrapped: bool,
+        tags: u8,
     ) -> Row {
         let mut row = Row {
             cells: cells.to_vec(),
             marks: marks.collect(),
+            tiles,
             wrapped,
+            tags,
         };
         row.cells.resize(cols, blank);
         row
     }
 
-    pub(super) fn unload(self, keep: usize, cells: &mut Vec<Cell>, marks: &mut Vec<(usize, char)>) {
-        marks.extend(
+    pub(super) fn unload(self, keep: usize, logical: &mut Logical) {
+        let base = logical.cells.len();
+        logical.tags |= self.tags;
+        logical
+            .tiles
+            .extend(self.tiles.into_iter().map(|tile| (base, tile)));
+        logical.marks.extend(
             self.marks
                 .iter()
                 .filter(|&&(column, _)| usize::from(column) < keep)
-                .map(|&(column, c)| (cells.len() + usize::from(column), c)),
+                .map(|&(column, c)| (base + usize::from(column), c)),
         );
-        cells.extend(
+        logical.cells.extend(
             self.cells
                 .into_iter()
                 .chain(std::iter::repeat(Cell::default()))
                 .take(keep),
         );
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn tiles(&self) -> &[Tile] {
+        &self.tiles
+    }
+
+    #[inline]
+    pub(super) fn tiles_mut(&mut self) -> &mut Vec<Tile> {
+        &mut self.tiles
+    }
+
+    pub(super) fn uncover(&mut self, range: Range<usize>) {
+        let overlaps = |tile: &Tile| {
+            tile.fragile && tile.columns().start < range.end && range.start < tile.columns().end
+        };
+        if !self.tiles.iter().any(overlaps) {
+            return;
+        }
+        for tile in std::mem::take(&mut self.tiles) {
+            if overlaps(&tile) {
+                let covered = tile.columns();
+                if covered.start < range.start {
+                    self.tiles.push(tile.slice(covered.start..range.start));
+                }
+                if range.end < covered.end {
+                    self.tiles.push(tile.slice(range.end..covered.end));
+                }
+            } else {
+                self.tiles.push(tile);
+            }
+        }
     }
 
     #[inline]
@@ -74,6 +142,34 @@ impl Row {
         self.wrapped = wrapped;
     }
 
+    #[inline]
+    #[must_use]
+    pub fn is_prompt(&self) -> bool {
+        self.tags & PROMPT != 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_output(&self) -> bool {
+        self.tags & OUTPUT != 0
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        self.tags & FAILED != 0
+    }
+
+    #[inline]
+    pub(super) fn tags(&self) -> u8 {
+        self.tags
+    }
+
+    #[inline]
+    pub(super) fn tag(&mut self, tags: u8) {
+        self.tags |= tags;
+    }
+
     pub fn marks(&self, column: usize) -> impl Iterator<Item = char> + '_ {
         self.marks
             .iter()
@@ -89,12 +185,19 @@ impl Row {
             .map_or(0, |last| last + 1)
     }
 
-    pub(super) fn reset(&mut self, cols: usize, blank: Cell) {
+    pub(super) fn clear(&mut self, cols: usize, blank: Cell) {
         self.cells.truncate(cols);
         self.cells.fill(blank);
         self.cells.resize(cols, blank);
         self.marks.clear();
+        self.tiles.retain(|tile| !tile.fragile);
         self.wrapped = false;
+        self.tags = 0;
+    }
+
+    pub(super) fn reset(&mut self, cols: usize, blank: Cell) {
+        self.clear(cols, blank);
+        self.tiles.clear();
     }
 
     pub(super) fn resize(&mut self, cols: usize, blank: Cell) {
@@ -194,6 +297,9 @@ impl Row {
         if !self.marks.is_empty() {
             self.marks
                 .retain(|&(mark, _)| !(start..end).contains(&usize::from(mark)));
+        }
+        if !self.tiles.is_empty() {
+            self.uncover(start..end);
         }
     }
 }

@@ -21,8 +21,8 @@ struct Varyings {
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32, instance: Instance) -> Varyings {
-    let offset = vec2<f32>(f32(index & 1u), f32(index >> 1u)) * vec2<f32>(instance.rect.zw);
-    let pixel = vec2<f32>(instance.rect.xy) + offset;
+    let corner = vec2<f32>(f32(index & 1u), f32(index >> 1u));
+    let pixel = vec2<f32>(instance.rect.xy) + corner * vec2<f32>(instance.rect.zw);
     var out: Varyings;
     out.position = vec4<f32>(
         pixel.x / globals.size.x * 2.0 - 1.0,
@@ -30,7 +30,7 @@ fn vertex(@builtin(vertex_index) index: u32, instance: Instance) -> Varyings {
         0.0,
         1.0,
     );
-    out.texel = vec2<f32>(instance.source.xy) + offset;
+    out.texel = vec2<f32>(instance.source.xy) + corner * vec2<f32>(instance.source.zw);
     out.color = vec4<f32>(instance.color.rgb * instance.color.a, instance.color.a);
     out.textured = instance.source.z;
     return out;

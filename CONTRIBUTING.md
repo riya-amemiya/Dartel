@@ -5,11 +5,12 @@ pull request.
 
 ## Setup
 
-This repository is a Rust 2024 workspace of seven crates. `dartel-vt`,
-`dartel-term`, `dartel-search`, `dartel-pty`, and `dartel-config` hold the VT
-parser, the terminal state, the scrollback search, the PTY, and the settings.
-`dartel-render` holds the GPU renderer, and `dartel` holds the window. Stable
-Rust builds, tests, and formats the project.
+This repository is a Rust 2024 workspace of eight crates. `dartel-vt`,
+`dartel-term`, `dartel-search`, `dartel-image`, `dartel-pty`, and
+`dartel-config` hold the VT parser, the terminal state, the scrollback search,
+the image decoders, the PTY, and the settings. `dartel-render` holds the GPU
+renderer, and `dartel` holds the window. Stable Rust builds, tests, and formats
+the project.
 
 ```sh
 cargo build

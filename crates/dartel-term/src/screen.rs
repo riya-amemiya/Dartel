@@ -1,6 +1,7 @@
 use unicode_width::UnicodeWidthChar;
 
 use super::charset::Charset;
+use super::graphics::Graphics;
 use super::{Cell, Cursor, Modes, Outbox, Saved, Style, StyleId, Term};
 
 impl Term {
@@ -396,12 +397,12 @@ impl Term {
                 self.grid.row_mut(line).set_wrapped(false);
                 self.grid.row_mut(line).erase(column..cols, blank);
                 for below in line + 1..lines {
-                    self.grid.row_mut(below).reset(cols, blank);
+                    self.grid.row_mut(below).clear(cols, blank);
                 }
             }
             1 => {
                 for above in 0..line {
-                    self.grid.row_mut(above).reset(cols, blank);
+                    self.grid.row_mut(above).clear(cols, blank);
                 }
                 self.grid.row_mut(line).erase(0..column + 1, blank);
             }
@@ -459,6 +460,7 @@ impl Term {
         }
         std::mem::swap(&mut self.grid, &mut self.inactive);
         std::mem::swap(&mut self.saved, &mut self.inactive_saved);
+        std::mem::swap(&mut self.keyboard, &mut self.inactive_keyboard);
         self.modes.set(Modes::ALTERNATE, enable);
         if enable && clear {
             let blank = self.blank();
@@ -504,6 +506,7 @@ impl Term {
                 title_changed: !self.title.is_empty(),
                 ..std::mem::take(&mut self.outbox)
             },
+            graphics: Graphics::new(self.graphics.cell()),
             ..Term::with_palette(
                 self.lines(),
                 self.cols(),

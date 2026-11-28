@@ -56,6 +56,7 @@ pub struct Style {
     pub background: Color,
     pub underline: Color,
     pub attrs: Attrs,
+    pub link: u16,
 }
 
 impl Style {
@@ -65,6 +66,7 @@ impl Style {
             | u128::from(self.background.pack()) << 32
             | u128::from(self.underline.pack()) << 64
             | u128::from(self.attrs.0) << 96
+            | u128::from(self.link) << 112
     }
 }
 

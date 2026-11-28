@@ -1,8 +1,10 @@
 use std::io::Write;
+use std::sync::Arc;
 
 use umt_rust::string::umt_from_base64;
 
-use super::{Rgb, Term};
+use super::row::{FAILED, OUTPUT, PROMPT};
+use super::{MAX_LINK_BYTES, Modes, Rgb, Term};
 
 fn number(bytes: &[u8]) -> Option<u8> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
@@ -10,6 +12,30 @@ fn number(bytes: &[u8]) -> Option<u8> {
 
 fn color(bytes: &[u8]) -> Option<Rgb> {
     Rgb::parse(std::str::from_utf8(bytes).ok()?)
+}
+
+fn unescaped(text: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut index = 0;
+    while index < text.len() {
+        let decoded = text
+            .get(index + 1..index + 3)
+            .filter(|pair| text[index] == b'%' && pair.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        bytes.push(decoded.unwrap_or(text[index]));
+        index += if decoded.is_some() { 3 } else { 1 };
+    }
+    bytes
+}
+
+fn location(uri: &[u8]) -> Option<(String, String)> {
+    let rest = uri.strip_prefix(b"file://")?;
+    let (host, path) = rest.split_at(rest.iter().position(|&byte| byte == b'/')?);
+    Some((
+        String::from_utf8_lossy(host).into_owned(),
+        String::from_utf8_lossy(&unescaped(path)).into_owned(),
+    ))
 }
 
 fn padded(data: &[u8]) -> Option<String> {
@@ -25,6 +51,14 @@ impl Term {
             [b"0" | b"2", title @ ..] if !title.is_empty() => {
                 self.title = String::from_utf8_lossy(&title.join(&b';')).into_owned();
                 self.outbox.title_changed = true;
+            }
+            [b"7", uri @ ..] => {
+                if let Some(directory) = location(&uri.join(&b';')) {
+                    self.directory = Some(directory);
+                }
+            }
+            [b"8", _, uri @ ..] => {
+                self.pen.style.link = self.link_id(&String::from_utf8_lossy(&uri.join(&b';')));
             }
             [b"4", pairs @ ..] => {
                 for &[index, spec] in pairs.as_chunks::<2>().0 {
@@ -47,6 +81,9 @@ impl Term {
                 {
                     self.outbox.clipboard = Some(text);
                 }
+            }
+            [b"133", kind, rest @ ..] if !self.modes.contains(Modes::ALTERNATE) => {
+                self.shell_mark(kind, rest);
             }
             [b"104"] | [b"104", b""] => {
                 for index in 0..=u8::MAX {
@@ -73,6 +110,39 @@ impl Term {
             [b"112", ..] => {
                 self.palette.cursor = self.base_palette.cursor;
                 self.damage.full = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn link_id(&mut self, uri: &str) -> u16 {
+        if let Some(&id) = self.link_ids.get(uri) {
+            return id;
+        }
+        if uri.is_empty() || uri.len() > MAX_LINK_BYTES || self.links.len() == usize::from(u16::MAX)
+        {
+            return 0;
+        }
+        let link: Arc<str> = Arc::from(uri);
+        self.links.push(Arc::clone(&link));
+        self.link_ids.insert(link, self.links.len() as u16);
+        self.links.len() as u16
+    }
+
+    fn shell_mark(&mut self, kind: &[u8], rest: &[&[u8]]) {
+        let line = self.cursor.line;
+        match kind.first() {
+            Some(b'A') => self.grid.row_mut(line).tag(PROMPT),
+            Some(b'C') => self.grid.row_mut(line).tag(OUTPUT),
+            Some(b'D') => {
+                let failed = rest
+                    .first()
+                    .and_then(|code| std::str::from_utf8(code).ok())
+                    .and_then(|code| code.parse::<i64>().ok())
+                    .is_some_and(|code| code != 0);
+                if failed && self.grid.tag_prompt(line, FAILED) {
+                    self.damage.full = true;
+                }
             }
             _ => {}
         }

@@ -29,14 +29,18 @@ fn extended(group: &[u16], rest: &mut ParamsIter<'_>) -> Option<Color> {
 
 impl Term {
     pub(super) fn select_graphic_rendition(&mut self, params: &Params) {
+        let plain = Style {
+            link: self.pen.style.link,
+            ..Style::default()
+        };
         if params.is_empty() {
-            self.pen.style = Style::default();
+            self.pen.style = plain;
             return;
         }
         let mut groups = params.iter();
         while let Some(group) = groups.next() {
             match group[0] {
-                0 => self.pen.style = Style::default(),
+                0 => self.pen.style = plain,
                 1 => self.pen.style.attrs.set(Attrs::BOLD, true),
                 2 => self.pen.style.attrs.set(Attrs::DIM, true),
                 3 => self.pen.style.attrs.set(Attrs::ITALIC, true),

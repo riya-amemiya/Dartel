@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -73,18 +74,22 @@ impl Session {
     pub fn spawn(
         id: u64,
         size: Size,
+        cell: [u16; 2],
+        directory: Option<PathBuf>,
         palette: Palette,
         history: usize,
         proxy: EventLoopProxy<Signal>,
     ) -> io::Result<Session> {
-        let pty = Pty::spawn(login_shell(), size)?;
+        let pty = Pty::spawn(login_shell(directory), size)?;
+        let mut term = Term::with_palette(
+            usize::from(size.lines),
+            usize::from(size.cols),
+            history,
+            palette,
+        );
+        term.set_cell_size(cell[0], cell[1]);
         let shared = Arc::new(Shared {
-            term: Mutex::new(Term::with_palette(
-                usize::from(size.lines),
-                usize::from(size.cols),
-                history,
-                palette,
-            )),
+            term: Mutex::new(term),
             frame_waiting: AtomicBool::new(false),
             wake_pending: AtomicBool::new(false),
         });
@@ -133,14 +138,18 @@ impl Session {
         self.term()
     }
 
-    pub fn resize(&self, size: Size) {
-        self.term()
-            .resize(usize::from(size.lines), usize::from(size.cols));
+    pub fn resize(&self, size: Size, cell: [u16; 2]) {
+        {
+            let mut term = self.term();
+            term.set_cell_size(cell[0], cell[1]);
+            term.resize(usize::from(size.lines), usize::from(size.cols));
+        }
         let _ = self.pty.resize(size);
     }
 
     pub fn close(mut self) {
         if !matches!(self.pty.try_wait(), Ok(Some(_))) {
+            let _ = self.pty.hangup();
             let _ = thread::Builder::new()
                 .name("dartel-reap".into())
                 .spawn(move || self.pty.wait());

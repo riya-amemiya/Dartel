@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use super::cell::Cell;
-use super::row::Row;
+use super::row::{Logical, PROMPT, Row};
 
 #[derive(Clone, Debug)]
 pub struct Grid {
@@ -121,6 +121,16 @@ impl Grid {
         }
     }
 
+    pub(super) fn tag_prompt(&mut self, line: usize, tags: u8) -> bool {
+        let found = (0..=self.history() + line)
+            .rev()
+            .find(|&index| self.rows[index].tags() & PROMPT != 0);
+        if let Some(index) = found {
+            self.rows[index].tag(tags);
+        }
+        found.is_some()
+    }
+
     pub(super) fn clear(&mut self, blank: Cell) {
         let base = self.history();
         for row in self.rows.range_mut(base..) {
@@ -169,36 +179,33 @@ impl Grid {
     fn reflow(&mut self, cols: usize, cursor: (usize, usize), blank: Cell) -> (usize, usize) {
         let target = self.history() + cursor.0;
         while self.rows.len() > target + 1
-            && self
-                .rows
-                .back()
-                .is_some_and(|row| row.occupied() == 0 && !row.is_wrapped())
+            && self.rows.back().is_some_and(|row| {
+                row.occupied() == 0 && !row.is_wrapped() && row.tiles().is_empty()
+            })
         {
             self.rows.pop_back();
         }
         let mut rows = VecDeque::with_capacity(self.rows.len());
-        let mut cells = Vec::new();
-        let mut marks = Vec::new();
+        let mut logical = Logical::default();
         let mut offset = None;
         let mut placed = (0, 0);
         for (index, row) in std::mem::take(&mut self.rows).into_iter().enumerate() {
             let wrapped = row.is_wrapped();
             let keep = if index == target {
-                offset = Some(cells.len() + cursor.1);
+                offset = Some(logical.cells.len() + cursor.1);
                 row.occupied().max(cursor.1)
             } else {
                 row.occupied()
             };
-            row.unload(keep, &mut cells, &mut marks);
+            row.unload(keep, &mut logical);
             if !wrapped {
                 placed =
-                    split(&mut rows, &cells, &marks, cols, blank, offset.take()).unwrap_or(placed);
-                cells.clear();
-                marks.clear();
+                    split(&mut rows, &mut logical, cols, blank, offset.take()).unwrap_or(placed);
+                logical.clear();
             }
         }
-        if !cells.is_empty() || offset.is_some() {
-            placed = split(&mut rows, &cells, &marks, cols, blank, offset).unwrap_or(placed);
+        if !logical.cells.is_empty() || !logical.tiles.is_empty() || offset.is_some() {
+            placed = split(&mut rows, &mut logical, cols, blank, offset).unwrap_or(placed);
         }
         rows.extend((rows.len()..self.lines).map(|_| Row::new(cols, blank)));
         let dropped = (rows.len() - self.lines).saturating_sub(self.history_limit);
@@ -218,12 +225,17 @@ impl Grid {
 
 fn split(
     rows: &mut VecDeque<Row>,
-    cells: &[Cell],
-    marks: &[(usize, char)],
+    logical: &mut Logical,
     cols: usize,
     blank: Cell,
     cursor: Option<usize>,
 ) -> Option<(usize, usize)> {
+    let Logical {
+        cells,
+        marks,
+        tiles,
+        tags,
+    } = logical;
     let mut start = 0;
     let mut placed = None;
     loop {
@@ -240,9 +252,14 @@ fn split(
                 .iter()
                 .filter(|&&(at, _)| (start..end).contains(&at))
                 .map(|&(at, c)| ((at - start) as u16, c)),
+            tiles
+                .extract_if(.., |(at, _)| *at < end || end == cells.len())
+                .map(|(_, tile)| tile)
+                .collect(),
             cols,
             blank,
             end < cells.len(),
+            if start == 0 { *tags } else { 0 },
         ));
         if end == cells.len() {
             return placed;

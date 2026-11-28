@@ -1,11 +1,36 @@
 use std::num::NonZero;
 use std::ops::Range;
+use std::sync::LazyLock;
 
-use memchr::memchr;
 use memchr::memmem::Finder;
+use memchr::{memchr, memchr_iter};
 use regex::bytes::{Regex, RegexBuilder};
 
 const PARALLEL_THRESHOLD: usize = 1 << 20;
+
+static URL: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r#"(?:https?|ftp|file)://[^\s<>"'`\\^{}|]+"#).ok());
+
+fn trimmed(url: &[u8]) -> usize {
+    let mut end = url.len();
+    loop {
+        let count = |wanted: u8| memchr_iter(wanted, &url[..end]).count();
+        match url[..end].last() {
+            Some(b'.' | b',' | b';' | b':' | b'!' | b'?') => end -= 1,
+            Some(b')') if count(b')') > count(b'(') => end -= 1,
+            Some(b']') if count(b']') > count(b'[') => end -= 1,
+            _ => return end,
+        }
+    }
+}
+
+#[must_use]
+pub fn url_at(text: &[u8], offset: usize) -> Option<Range<usize>> {
+    URL.as_ref()?
+        .find_iter(text)
+        .map(|found| found.start()..found.start() + trimmed(found.as_bytes()))
+        .find(|range| range.contains(&offset))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Match {
