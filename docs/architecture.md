@@ -511,11 +511,12 @@ flowchart TD
     rebuild --> cached{"Glyph in the cache"}
     cached -- yes --> frame["Concatenate backgrounds, glyphs, pictures, and overlays"]
     cached -- no --> drawn{"Box drawing, block element, or Powerline arrow"}
-    drawn -- yes --> mask["Draw a mask of one cell and upload to the atlas"]
-    drawn -- no --> raster["Rasterize with swash and upload to the atlas"]
+    drawn -- yes --> mask["Draw a mask of one cell and keep it for the atlas"]
+    drawn -- no --> raster["Rasterize with swash and keep it for the atlas"]
     mask --> frame
     raster --> frame
-    frame --> buffer["Write the instance buffer"]
+    frame --> upload["Upload the kept glyphs to the atlas"]
+    upload --> buffer["Write the instance buffer"]
     buffer --> draw["One instanced draw call per layer"]
 ```
 
@@ -545,9 +546,16 @@ flowchart TD
 - The texture rectangle of a quad has an origin and a size, and a size of zero
   marks a solid quad. A tile placed at another cell size is drawn scaled, from
   the nearest texel.
-- The glyph atlas is one 2048 by 2048 RGBA texture filled shelf by shelf. When
-  it is full, the glyph cache is dropped and the visible lines are rasterized
-  again.
+- The glyph atlas is one 2048 by 2048 RGBA texture filled shelf by shelf.
+  `Scene` picks the place of a new glyph and keeps its pixels until
+  `Scene::flush` uploads them, so `Scene::compose` takes no `Gpu`, and the
+  upload runs after the UI thread has released the `Term`. When the atlas is
+  full, the glyph cache and the kept pixels are dropped and the visible lines
+  are rasterized again.
+- `cargo bench -p dartel-render --bench compose` times `Scene::compose`
+  without a window. It fills a `Term` with generated lines and measures a
+  frame that rebuilds every line, a frame after one new line, and a frame
+  after no change.
 - Straight and double underlines are solid quads. Curly, dotted, and dashed
   underlines are masks one cell wide that `Scene` draws into the atlas on
   first use, one per pattern, and every underlined cell gets one textured quad

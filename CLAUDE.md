@@ -89,6 +89,8 @@ Dartel/
 │   │       ├── config_test.rs
 │   │       └── toml_test.rs
 │   ├── dartel-render/        # GPU renderer
+│   │   ├── benches/
+│   │   │   └── compose.rs    # Time of one Scene::compose call over generated screens
 │   │   └── src/
 │   │       ├── lib.rs        # Exports
 │   │       ├── font.rs       # Font discovery, fallback, rasterization
@@ -155,6 +157,17 @@ number of repetitions, and `only` keeps the inputs whose name contains it:
 ```sh
 cargo bench -p dartel-term --bench throughput
 cargo bench -p dartel-term --bench throughput -- size=16 runs=3 only=sgr
+```
+
+Measure the time of one `Scene::compose` call. The benchmark fills a screen
+with each input and prints the best and the median time in microseconds for
+three frames: `full` rebuilds every line, `scroll` follows one new line, and
+`idle` follows no change. It opens no window. `lines`, `cols`, `runs`, and
+`only` work as above, and `frames` is the number of frames in one run:
+
+```sh
+cargo bench -p dartel-render --bench compose
+cargo bench -p dartel-render --bench compose -- lines=50 cols=200 only=seq
 ```
 
 Write the settings in use to a TOML file, or load a TOML file and keep it for
@@ -255,6 +268,10 @@ Build and test for that target run on the macOS CI job.
 - The counts in `Scene::layers` add up to the length of `Scene::quads`. The
   texture rectangle of a `Quad` has a size, and a size of zero means a solid
   quad.
+- `Scene::compose` takes no `Gpu`. The pixels of a new glyph wait in `Scene`,
+  and `Scene::flush` uploads them to the atlas. The window calls it after
+  `Scene::compose` and before `Gpu::draw`, because a glyph that was not
+  uploaded draws as an empty rectangle.
 - Box drawing characters, block elements, and Powerline arrows are drawn by
   `Scene::rasterize` as masks of one cell, and `Scene::compose_row` draws
   them as ordinary cached glyphs. A horizontal line of one weight sits on the
@@ -383,7 +400,9 @@ chromium --headless --no-sandbox --hide-scrollbars --default-background-color=00
   PTY of the kernel limits that number, so compare the parser and the grid
   with `cargo bench -p dartel-term --bench throughput`, which feeds generated
   input to `Parser::advance` outside the window. Run it on the base commit and
-  on the change, and compare the best rates.
+  on the change, and compare the best rates. Compare `Scene::compose_row` the
+  same way with `cargo bench -p dartel-render --bench compose`, by the best
+  times.
 - The search foundation of happy-cracking is `pub(crate)` and cannot be a
   dependency. Its designs are ported instead, and `docs/architecture.md` lists
   them.

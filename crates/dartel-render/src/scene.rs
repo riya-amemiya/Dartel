@@ -148,6 +148,12 @@ struct Label<'a> {
     underlined: bool,
 }
 
+struct Patch {
+    origin: [u32; 2],
+    size: [u32; 2],
+    pixels: Vec<u8>,
+}
+
 pub struct Scene {
     fonts: Fonts,
     ascii: [[Option<Glyph>; 128]; 4],
@@ -155,6 +161,7 @@ pub struct Scene {
     patterns: [Option<Glyph>; 3],
     pen: [u32; 2],
     shelf: u32,
+    patches: Vec<Patch>,
     rows: Vec<Row>,
     quads: Vec<Quad>,
     layers: Vec<Layer>,
@@ -582,6 +589,7 @@ impl Scene {
             patterns: [None; 3],
             pen: [0; 2],
             shelf: 0,
+            patches: Vec::new(),
             rows: Vec::new(),
             quads: Vec::new(),
             layers: Vec::new(),
@@ -668,18 +676,25 @@ impl Scene {
         self.patterns = [None; 3];
         self.pen = [0; 2];
         self.shelf = 0;
+        self.patches.clear();
         self.rows.clear();
         self.stale = true;
     }
 
-    fn glyph(&mut self, gpu: &Gpu, c: char, face: usize) -> Option<Glyph> {
+    pub fn flush(&mut self, gpu: &Gpu) {
+        for patch in self.patches.drain(..) {
+            gpu.upload(patch.origin, patch.size, &patch.pixels);
+        }
+    }
+
+    fn glyph(&mut self, c: char, face: usize) -> Option<Glyph> {
         if let Some(cached) = self.ascii[face]
             .get(c as usize)
             .map_or_else(|| self.glyphs.get(&(c, face)).copied(), |slot| *slot)
         {
             return Some(cached);
         }
-        let glyph = self.rasterize(gpu, c, face)?;
+        let glyph = self.rasterize(c, face)?;
         match self.ascii[face].get_mut(c as usize) {
             Some(slot) => *slot = Some(glyph),
             None => {
@@ -689,7 +704,7 @@ impl Scene {
         Some(glyph)
     }
 
-    fn rasterize(&mut self, gpu: &Gpu, c: char, face: usize) -> Option<Glyph> {
+    fn rasterize(&mut self, c: char, face: usize) -> Option<Glyph> {
         let metrics = self.fonts.metrics();
         let size = [metrics.width, metrics.height];
         if let Some(alpha) = drawing(c, size, metrics.stroke) {
@@ -697,7 +712,7 @@ impl Scene {
                 return Some(Glyph::default());
             }
             return Some(Glyph {
-                origin: self.place(gpu, size, &rgba(alpha))?,
+                origin: self.place(size, rgba(alpha))?,
                 size: [size[0] as u16, size[1] as u16],
                 top: metrics.ascent as i16,
                 advance: size[0] as i16,
@@ -710,7 +725,7 @@ impl Scene {
             return Some(Glyph::default());
         };
         Some(Glyph {
-            origin: self.place(gpu, [raster.width, raster.height], &raster.pixels)?,
+            origin: self.place([raster.width, raster.height], raster.pixels)?,
             size: [raster.width as u16, raster.height as u16],
             left: raster.left as i16,
             top: raster.top as i16,
@@ -719,7 +734,7 @@ impl Scene {
         })
     }
 
-    fn place(&mut self, gpu: &Gpu, size: [u32; 2], pixels: &[u8]) -> Option<[u16; 2]> {
+    fn place(&mut self, size: [u32; 2], pixels: Vec<u8>) -> Option<[u16; 2]> {
         if self.pen[0] + size[0] > ATLAS_SIZE {
             self.pen = [0, self.pen[1] + self.shelf];
             self.shelf = 0;
@@ -727,14 +742,18 @@ impl Scene {
         if self.pen[1] + size[1] > ATLAS_SIZE {
             return None;
         }
-        gpu.upload(self.pen, size, pixels);
+        self.patches.push(Patch {
+            origin: self.pen,
+            size,
+            pixels,
+        });
         let origin = [self.pen[0] as u16, self.pen[1] as u16];
         self.pen[0] += size[0];
         self.shelf = self.shelf.max(size[1]);
         Some(origin)
     }
 
-    fn pattern(&mut self, gpu: &Gpu, pattern: Pattern) -> Option<Glyph> {
+    fn pattern(&mut self, pattern: Pattern) -> Option<Glyph> {
         if let Some(cached) = self.patterns[pattern as usize] {
             return Some(cached);
         }
@@ -743,7 +762,7 @@ impl Scene {
         let size = [metrics.width, height];
         let glyph = if size.iter().all(|side| (1..=ATLAS_SIZE).contains(side)) {
             Glyph {
-                origin: self.place(gpu, size, &rgba(mask(pattern, size, thickness)))?,
+                origin: self.place(size, rgba(mask(pattern, size, thickness)))?,
                 size: [size[0] as u16, size[1] as u16],
                 top: top as i16,
                 ..Glyph::default()
@@ -799,16 +818,16 @@ impl Scene {
         )
     }
 
-    pub fn compose(&mut self, gpu: &Gpu, term: &Term, overlay: &Overlay<'_>) {
+    pub fn compose(&mut self, term: &Term, overlay: &Overlay<'_>) {
         if self.rows.len() != term.lines() {
             self.rows.clear();
             self.rows.resize_with(term.lines(), Row::default);
             self.stale = true;
         }
-        if !self.compose_rows(gpu, term) {
+        if !self.compose_rows(term) {
             self.forget_glyphs();
             self.rows.resize_with(term.lines(), Row::default);
-            self.compose_rows(gpu, term);
+            self.compose_rows(term);
         }
         self.stale = false;
         self.quads.clear();
@@ -860,7 +879,7 @@ impl Scene {
             ));
         }
         if overlay.caret && overlay.preedit.is_empty() {
-            self.compose_cursor(gpu, term, overlay.focused);
+            self.compose_cursor(term, overlay.focused);
         }
         if let Some(text) = overlay.banner {
             self.quads.push(solid(
@@ -872,7 +891,6 @@ impl Scene {
                 u8::MAX,
             ));
             self.label(
-                gpu,
                 term,
                 &Label {
                     line: term.lines() - 1,
@@ -885,7 +903,6 @@ impl Scene {
             );
         } else if !overlay.preedit.is_empty() {
             self.label(
-                gpu,
                 term,
                 &Label {
                     line: term.cursor().line.min(term.lines() - 1),
@@ -898,7 +915,7 @@ impl Scene {
             );
         }
         if self.bar {
-            self.compose_tabs(gpu, term.palette(), overlay);
+            self.compose_tabs(term.palette(), overlay);
         }
         self.layers.push(Layer {
             picture: None,
@@ -907,7 +924,7 @@ impl Scene {
         });
     }
 
-    fn compose_tabs(&mut self, gpu: &Gpu, palette: &Palette, overlay: &Overlay<'_>) {
+    fn compose_tabs(&mut self, palette: &Palette, overlay: &Overlay<'_>) {
         let metrics = self.fonts.metrics();
         let (width, stroke) = (metrics.width as i32, metrics.stroke as i32);
         let header = self.header();
@@ -939,7 +956,7 @@ impl Scene {
                     break;
                 }
                 if advance > 0
-                    && let Some(glyph) = self.glyph(gpu, c, REGULAR)
+                    && let Some(glyph) = self.glyph(c, REGULAR)
                     && glyph.size[0] > 0
                 {
                     self.quads.push(textured(
@@ -955,13 +972,12 @@ impl Scene {
         }
     }
 
-    fn compose_rows(&mut self, gpu: &Gpu, term: &Term) -> bool {
-        (0..term.lines()).all(|line| {
-            !(self.stale || term.damage().line(line)) || self.compose_row(gpu, term, line)
-        })
+    fn compose_rows(&mut self, term: &Term) -> bool {
+        (0..term.lines())
+            .all(|line| !(self.stale || term.damage().line(line)) || self.compose_row(term, line))
     }
 
-    fn compose_row(&mut self, gpu: &Gpu, term: &Term, line: usize) -> bool {
+    fn compose_row(&mut self, term: &Term, line: usize) -> bool {
         let metrics = self.fonts.metrics();
         let (width, height) = (metrics.width as i32, metrics.height as i32);
         let top = self.top() + line as i32 * height;
@@ -1018,7 +1034,7 @@ impl Scene {
                         .into_iter()
                         .flatten(),
                 ) {
-                    let Some(glyph) = self.glyph(gpu, c, look.face) else {
+                    let Some(glyph) = self.glyph(c, look.face) else {
                         complete = false;
                         break 'cells;
                     };
@@ -1035,7 +1051,7 @@ impl Scene {
             }
             if look.attrs.contains(Attrs::ANY_UNDERLINE) {
                 if let Some(pattern) = pattern_of(look.attrs) {
-                    let Some(glyph) = self.pattern(gpu, pattern) else {
+                    let Some(glyph) = self.pattern(pattern) else {
                         complete = false;
                         break 'cells;
                     };
@@ -1159,7 +1175,7 @@ impl Scene {
         }
     }
 
-    fn compose_cursor(&mut self, gpu: &Gpu, term: &Term, focused: bool) {
+    fn compose_cursor(&mut self, term: &Term, focused: bool) {
         let cursor = term.cursor();
         if !cursor.visible {
             return;
@@ -1202,7 +1218,6 @@ impl Scene {
                 self.quads.push(solid(x, y, span, height, color, u8::MAX));
                 if let Some(glyph) = cell.ch().and_then(|c| {
                     self.glyph(
-                        gpu,
                         c,
                         look(term.style(cell.style()), term.palette(), false).face,
                     )
@@ -1231,7 +1246,7 @@ impl Scene {
         }
     }
 
-    fn label(&mut self, gpu: &Gpu, term: &Term, label: &Label<'_>) {
+    fn label(&mut self, term: &Term, label: &Label<'_>) {
         let metrics = self.fonts.metrics();
         let (width, height) = (metrics.width as i32, metrics.height as i32);
         let top = self.top() + label.line as i32 * height;
@@ -1245,7 +1260,7 @@ impl Scene {
             let span = cells as i32 * width;
             self.quads
                 .push(solid(left, top, span, height, label.paper, u8::MAX));
-            if let Some(glyph) = self.glyph(gpu, c, REGULAR)
+            if let Some(glyph) = self.glyph(c, REGULAR)
                 && glyph.size[0] > 0
             {
                 self.quads.push(textured(
