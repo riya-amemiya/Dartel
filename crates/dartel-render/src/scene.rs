@@ -24,6 +24,13 @@ struct Glyph {
     colored: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pattern {
+    Curly,
+    Dotted,
+    Dashed,
+}
+
 #[derive(Debug, Default)]
 struct Row {
     backgrounds: Vec<Quad>,
@@ -66,6 +73,7 @@ pub struct Scene {
     fonts: Fonts,
     ascii: [[Option<Glyph>; 128]; 4],
     glyphs: HashMap<(char, usize), Glyph>,
+    patterns: [Option<Glyph>; 3],
     pen: [u32; 2],
     shelf: u32,
     rows: Vec<Row>,
@@ -189,6 +197,68 @@ fn tail(text: &str, cells: usize) -> &str {
         .map_or("", |(index, _)| &text[index..])
 }
 
+fn pattern_of(attrs: Attrs) -> Option<Pattern> {
+    if attrs.contains(Attrs::CURLY_UNDERLINE) {
+        Some(Pattern::Curly)
+    } else if attrs.contains(Attrs::DOTTED_UNDERLINE) {
+        Some(Pattern::Dotted)
+    } else if attrs.contains(Attrs::DASHED_UNDERLINE) {
+        Some(Pattern::Dashed)
+    } else {
+        None
+    }
+}
+
+fn band(pattern: Pattern, metrics: Metrics) -> (i32, u32, u32) {
+    let thickness = metrics.stroke.min(metrics.height);
+    let size = match pattern {
+        Pattern::Curly => (3 * thickness).max(metrics.width / 4).min(metrics.height),
+        Pattern::Dotted | Pattern::Dashed => thickness,
+    };
+    (
+        metrics.underline.min((metrics.height - size) as i32).max(0),
+        size,
+        thickness,
+    )
+}
+
+fn coverage(pattern: Pattern, x: u32, y: u32, size: [u32; 2], thickness: u32) -> u8 {
+    let [width, height] = size;
+    match pattern {
+        Pattern::Curly => {
+            let (span, stroke) = (width as f32, thickness as f32);
+            let swing = (height as f32 - stroke).max(0.0) / 2.0;
+            let phase = std::f32::consts::TAU * (x as f32 + 0.5) / span;
+            let center = stroke / 2.0 + swing * (1.0 - phase.cos());
+            let slope = swing * phase.sin() * std::f32::consts::TAU / span;
+            let distance = (y as f32 + 0.5 - center).abs() / slope.hypot(1.0);
+            ((stroke / 2.0 + 0.5 - distance).clamp(0.0, 1.0) * f32::from(u8::MAX)).round() as u8
+        }
+        Pattern::Dotted => {
+            let segments = 2 * (width / (2 * thickness)).max(1);
+            if (x * segments / width).is_multiple_of(2) {
+                u8::MAX
+            } else {
+                0
+            }
+        }
+        Pattern::Dashed => {
+            let gap = width / 3;
+            if (gap / 2..width - (gap - gap / 2)).contains(&x) {
+                u8::MAX
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn mask(pattern: Pattern, size: [u32; 2], thickness: u32) -> Vec<u8> {
+    (0..size[1])
+        .flat_map(|y| (0..size[0]).map(move |x| coverage(pattern, x, y, size, thickness)))
+        .collect()
+}
+
 fn centering(span: i32, glyph: Glyph) -> i32 {
     if (span - i32::from(glyph.advance)).abs() <= 1 {
         0
@@ -204,6 +274,7 @@ impl Scene {
             fonts: Fonts::new(font_family, font_size)?,
             ascii: [[None; 128]; 4],
             glyphs: HashMap::new(),
+            patterns: [None; 3],
             pen: [0; 2],
             shelf: 0,
             rows: Vec::new(),
@@ -289,6 +360,7 @@ impl Scene {
     fn forget_glyphs(&mut self) {
         self.ascii = [[None; 128]; 4];
         self.glyphs.clear();
+        self.patterns = [None; 3];
         self.pen = [0; 2];
         self.shelf = 0;
         self.rows.clear();
@@ -318,24 +390,53 @@ impl Scene {
         }) else {
             return Some(Glyph::default());
         };
-        if self.pen[0] + raster.width > ATLAS_SIZE {
-            self.pen = [0, self.pen[1] + self.shelf];
-            self.shelf = 0;
-        }
-        if self.pen[1] + raster.height > ATLAS_SIZE {
-            return None;
-        }
-        gpu.upload(self.pen, [raster.width, raster.height], &raster.pixels);
-        let glyph = Glyph {
-            origin: [self.pen[0] as u16, self.pen[1] as u16],
+        Some(Glyph {
+            origin: self.place(gpu, [raster.width, raster.height], &raster.pixels)?,
             size: [raster.width as u16, raster.height as u16],
             left: raster.left as i16,
             top: raster.top as i16,
             advance: raster.advance.round() as i16,
             colored: raster.colored,
+        })
+    }
+
+    fn place(&mut self, gpu: &Gpu, size: [u32; 2], pixels: &[u8]) -> Option<[u16; 2]> {
+        if self.pen[0] + size[0] > ATLAS_SIZE {
+            self.pen = [0, self.pen[1] + self.shelf];
+            self.shelf = 0;
+        }
+        if self.pen[1] + size[1] > ATLAS_SIZE {
+            return None;
+        }
+        gpu.upload(self.pen, size, pixels);
+        let origin = [self.pen[0] as u16, self.pen[1] as u16];
+        self.pen[0] += size[0];
+        self.shelf = self.shelf.max(size[1]);
+        Some(origin)
+    }
+
+    fn pattern(&mut self, gpu: &Gpu, pattern: Pattern) -> Option<Glyph> {
+        if let Some(cached) = self.patterns[pattern as usize] {
+            return Some(cached);
+        }
+        let metrics = self.fonts.metrics();
+        let (top, height, thickness) = band(pattern, metrics);
+        let size = [metrics.width, height];
+        let glyph = if size.iter().all(|side| (1..=ATLAS_SIZE).contains(side)) {
+            let pixels: Vec<u8> = mask(pattern, size, thickness)
+                .into_iter()
+                .flat_map(|alpha| [alpha; 4])
+                .collect();
+            Glyph {
+                origin: self.place(gpu, size, &pixels)?,
+                size: [size[0] as u16, size[1] as u16],
+                top: top as i16,
+                ..Glyph::default()
+            }
+        } else {
+            Glyph::default()
         };
-        self.pen[0] += raster.width;
-        self.shelf = self.shelf.max(raster.height);
+        self.patterns[pattern as usize] = Some(glyph);
         Some(glyph)
     }
 
@@ -594,14 +695,29 @@ impl Scene {
                 }
             }
             if look.attrs.contains(Attrs::ANY_UNDERLINE) {
-                row.glyphs.push(solid(
-                    left,
-                    top + metrics.underline,
-                    width,
-                    metrics.stroke as i32,
-                    look.underline,
-                    u8::MAX,
-                ));
+                if let Some(pattern) = pattern_of(look.attrs) {
+                    let Some(glyph) = self.pattern(gpu, pattern) else {
+                        complete = false;
+                        break 'cells;
+                    };
+                    if glyph.size[0] > 0 {
+                        row.glyphs.push(textured(
+                            left,
+                            top + i32::from(glyph.top),
+                            glyph,
+                            look.underline,
+                        ));
+                    }
+                } else {
+                    row.glyphs.push(solid(
+                        left,
+                        top + metrics.underline,
+                        width,
+                        metrics.stroke as i32,
+                        look.underline,
+                        u8::MAX,
+                    ));
+                }
             }
             if look.attrs.contains(Attrs::DOUBLE_UNDERLINE) {
                 row.glyphs.push(solid(
@@ -793,5 +909,65 @@ impl Scene {
             }
             column += cells;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Metrics, Pattern, band, mask};
+
+    fn metrics(width: u32, height: u32, underline: i32, stroke: u32) -> Metrics {
+        Metrics {
+            width,
+            height,
+            ascent: underline - 2,
+            underline,
+            strikeout: underline / 2,
+            stroke,
+        }
+    }
+
+    fn column(pixels: &[u8], width: usize, x: usize) -> Vec<u8> {
+        pixels.iter().skip(x).step_by(width).copied().collect()
+    }
+
+    #[test]
+    fn curly_band_stays_inside_a_short_cell() {
+        let (top, size, _) = band(Pattern::Curly, metrics(6, 7, 7, 1));
+        assert!(top >= 0 && top as u32 + size <= 7);
+    }
+
+    #[test]
+    fn curly_band_starts_at_the_underline_when_it_fits() {
+        assert_eq!(band(Pattern::Curly, metrics(10, 20, 15, 1)), (15, 3, 1));
+    }
+
+    #[test]
+    fn dotted_band_is_one_stroke_tall() {
+        assert_eq!(band(Pattern::Dotted, metrics(10, 20, 15, 2)), (15, 2, 2));
+    }
+
+    #[test]
+    fn curly_mask_matches_at_both_cell_edges() {
+        let pixels = mask(Pattern::Curly, [10, 4], 1);
+        assert_eq!(column(&pixels, 10, 0), column(&pixels, 10, 9));
+    }
+
+    #[test]
+    fn curly_mask_reaches_the_bottom_in_the_middle_of_the_cell() {
+        let pixels = mask(Pattern::Curly, [10, 4], 1);
+        assert!(pixels[3 * 10 + 4] > 0 && pixels[4] == 0);
+    }
+
+    #[test]
+    fn dotted_mask_alternates_across_the_cell_boundary() {
+        let pixels = mask(Pattern::Dotted, [10, 1], 1);
+        assert_eq!(pixels, [255, 0, 255, 0, 255, 0, 255, 0, 255, 0]);
+    }
+
+    #[test]
+    fn dashed_mask_leaves_a_gap_on_both_edges() {
+        let pixels = mask(Pattern::Dashed, [9, 1], 1);
+        assert_eq!(pixels, [0, 255, 255, 255, 255, 255, 255, 0, 0]);
     }
 }

@@ -243,8 +243,9 @@ Build and test for that target run on the macOS CI job.
 - A test that depends on an environment variable calls a function that takes
   the value as an argument, such as `start_directory` and
   `Locations::resolve`, because `std::env::set_var` is unsafe.
-- The `dartel-render` and `dartel` crates have no automated tests. Check them
-  on a display.
+- The `dartel-render` and `dartel` crates have no integration tests. Check
+  them on a display. `scene.rs` unit-tests the private helpers that build the
+  underline masks.
 
 ## Checking the Window on Linux Without a Display
 

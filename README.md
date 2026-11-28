@@ -14,7 +14,7 @@ Dartel (ダーテル) comes from Dart, to fly like an arrow, and Terminal. With 
 - Settings in a TOML file that is loaded and saved on request
 - Scrollback with literal and regex search
 - Lines rewrap when the window width changes
-- True color and 256 colors, bold, dim, italic, underline, double underline, strikethrough, and inverse
+- True color and 256 colors, bold, dim, italic, straight, double, curly, dotted, and dashed underlines, strikethrough, and inverse
 - Wide characters, combining marks, and emoji through font fallback
 - Images through Sixel and the kitty graphics protocol
 - The kitty keyboard protocol
