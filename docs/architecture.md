@@ -81,7 +81,8 @@ sequenceDiagram
 
 The UI thread sleeps in `ControlFlow::Wait`. It switches to
 `ControlFlow::WaitUntil` only while a cursor blink, a synchronized-update
-timeout, or a notice is pending. A frame is skipped while the application
+timeout, a notice, or the next frame of a running animation on the screen is
+pending. A frame is skipped while the application
 holds synchronized update mode, for at most 150 ms.
 
 A key press that is sent to the shell requests no frame by itself. The echo
@@ -559,15 +560,76 @@ flowchart TD
   4096 by 4096 pixels.
 - `Term` keeps the transmitted images by id, the newest id for each image
   number, and a weak reference to every placed `Picture`. Both sets are held
-  to 256 MiB by dropping the oldest entries.
+  to 256 MiB by dropping the oldest entries. The frames of animations count
+  toward the images.
 - Replies to graphics commands and to `CSI 14 t` and `CSI 16 t` go through the
   reply buffer that other queries use. The window sets the cell size with
   `Term::set_cell_size`.
-- Animation, Unicode placeholders, relative placements, the indexed formats,
-  and transmission through files or shared memory are refused, with an
-  `EINVAL` reply when the command names an image. `umt_from_base64` returns a
-  UTF-8 string, so image payloads are decoded by `dartel_image::base64`
+- Unicode placeholders, relative placements, the indexed formats, feature
+  queries, and transmission through files or shared memory are refused, with
+  an `EINVAL` reply when the command names an image. `umt_from_base64` returns
+  a UTF-8 string, so image payloads are decoded by `dartel_image::base64`
   instead.
+
+### Animation
+
+The image stored under an id is the root frame. `a=f` adds the other frames,
+`a=a` controls playback, and `a=c` copies rectangles between frames. `Term`
+has no clock. The UI thread passes the time to `Term::animate`, which shows
+the frames that are due and returns the time of the next change.
+
+```mermaid
+flowchart TD
+    frame["a=f, chunks joined as for a=t"] --> canvas["Canvas: frame c, frame r, or the color Y"]
+    canvas --> paint["Blend or replace the data at x, y"]
+    paint --> keep["Keep the frame beside the root frame"]
+    control["a=a"] --> state["State, loop count, current frame, gaps"]
+    compose["a=c"] --> copy["Blend or replace a rectangle of frame r onto frame c"]
+    redraw["UI thread draws a frame"] --> animate["Term animate with the time"]
+    animate --> visible{"Running animation with a tile on the screen"}
+    visible -- no --> none["No deadline"]
+    visible -- yes --> due{"Gap of the current frame passed"}
+    due -- yes --> next["Next frame, then swap the Picture of every placement"]
+    due -- no --> deadline["Deadline at the end of the gap"]
+    next --> deadline
+    deadline --> wait["ControlFlow WaitUntil the earliest deadline"]
+```
+
+- An `Animation` holds the frames after the root frame as full-size straight
+  RGBA `Image`s with their gaps, the current frame, the state, the loop count,
+  the number of passes played, and the time the current frame was first shown.
+  `Graphics::animations` keys it by image id. A new frame is drawn once, when
+  its command arrives, so a frame never refers to another one later.
+- Each placement of a kitty image with an id records a `Showing`, which holds
+  a weak reference to its `Picture` and the source rectangle and sizes that
+  scaled it. Showing another frame builds a new `Picture` from that frame with
+  the same serial number and size, swaps it into the tiles that held the old
+  one, and marks the visible rows that changed through `Damage`. The scaling
+  runs under the lock of the `Term`, once per placement and frame change.
+- `Term::animate` returns at once when no image has animation state. Otherwise
+  it looks only at the images with a tile on a visible row. A stopped
+  animation or one that waits for frames at the end gives no deadline, and a
+  frame with a gap of zero or less is passed over in the same call. The root
+  frame has a gap of zero until `a=a` sets one, and a new frame has 40 ms.
+- The state starts stopped. `s=3` loops, `s=2` waits at the last frame for
+  more frames, and `s=1` stops and resets the passes played. `v=1` loops
+  forever, and `v=n` plays `n - 1` passes and stops on the last frame. The
+  first call after a start shows the current frame from that time on.
+- An animation off the screen or in a background tab does not move. When it
+  comes back into view, it moves on by at most one pass and counts its gap
+  again from that call.
+- A frame that would make the root frame and the frames of one image larger
+  than the quota is refused with `ENOSPC`. A new frame moves its image to the
+  newest end of the order that the quota drops from.
+- `a=d` with `d=f` or `d=F` and an image id or number removes every frame
+  except the root frame and shows the root frame. Sending the image again or
+  freeing its data drops its animation state.
+- The window keeps the deadline that `Term::animate` returned for its active
+  tab. It is one of the deadlines of `View::deadline`, so the event loop wakes
+  for it and requests a frame, and a window without a running animation on
+  the screen wakes no more often than before. The wake clears the kept
+  deadline and the frame it requested sets the next one, so a window whose
+  frame is not drawn does not wake for the animation again.
 
 ## Search
 
@@ -647,7 +709,11 @@ flowchart TD
   is the address of the `Arc<Picture>`, because serial numbers repeat across
   tabs. A texture is dropped when its `Picture` is gone, or when the textures
   pass 256 MiB and the frame does not use it. A picture larger than the
-  texture limit of the device is not drawn.
+  texture limit of the device is not drawn. A frame change of an animation
+  replaces the `Picture` of each placement, so the next draw drops the texture
+  of the old frame and uploads the new one. The weak reference in the texture
+  entry keeps the old allocation, so the new `Picture` cannot take its
+  address before the entry is dropped.
 - The texture rectangle of a quad has an origin and a size, and a size of zero
   marks a solid quad. A tile placed at another cell size is drawn scaled, from
   the nearest texel.

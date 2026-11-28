@@ -116,6 +116,7 @@ struct View {
     reported: Option<(usize, usize)>,
     blink: Instant,
     blinking: bool,
+    animation: Option<Instant>,
     caret: Option<(usize, usize)>,
     clicks: Option<(Instant, Point, u8)>,
 }
@@ -408,6 +409,7 @@ impl View {
             reported: None,
             blink: Instant::now(),
             blinking: false,
+            animation: None,
             caret: None,
             clicks: None,
         };
@@ -681,6 +683,7 @@ impl View {
                 self.window.set_title(caption(&tab.title));
             }
             self.blinking = self.focused && term.cursor().blinking && term.cursor().visible;
+            self.animation = term.animate(Instant::now());
             self.scene.compose(
                 &term,
                 &Overlay {
@@ -748,6 +751,7 @@ impl View {
                     + BLINK * (self.blink.elapsed().as_millis() / BLINK.as_millis() + 1) as u32
             }),
             self.notice.as_ref().map(|(_, since)| *since + NOTICE),
+            self.animation,
         ]
         .into_iter()
         .flatten()
@@ -1233,8 +1237,9 @@ impl View {
 impl ApplicationHandler<Signal> for App {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            for view in &self.views {
+            for view in &mut self.views {
                 if view.deadline().is_some() {
+                    view.animation = None;
                     view.window.request_redraw();
                 }
             }

@@ -118,6 +118,12 @@ impl Row {
             .map_or(&[], |extras| extras.tiles.as_slice())
     }
 
+    pub(super) fn tiles_mut(&mut self) -> &mut [Tile] {
+        self.extras
+            .as_deref_mut()
+            .map_or(&mut [], |extras| extras.tiles.as_mut_slice())
+    }
+
     pub(super) fn place(&mut self, tile: Tile) {
         self.extras.get_or_insert_default().tiles.push(tile);
     }

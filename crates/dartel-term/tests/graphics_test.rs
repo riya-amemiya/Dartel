@@ -1,7 +1,13 @@
+use std::time::{Duration, Instant};
+
 use dartel_term::{Term, Tile};
 use dartel_vt::Parser;
 
 const COLOR: [u8; 3] = [200, 100, 50];
+const RED: [u8; 4] = [255, 0, 0, 255];
+const GREEN: [u8; 4] = [0, 255, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+const NO_FRAME: &str = "ENOENT:no frame with this number";
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xB6, 0x0D,
@@ -161,6 +167,60 @@ fn deleted(control: &str) -> Vec<usize> {
 fn kept(term: &mut Term, id: u32) -> bool {
     feed(term, &kitty(&format!("a=p,i={id},C=1"), &[]));
     reply(term) == answer(id, "OK")
+}
+
+fn pixel(control: &str, rgba: [u8; 4]) -> Vec<u8> {
+    kitty(&format!("s=1,v=1,{control}"), &rgba)
+}
+
+fn order(control: &str) -> Vec<u8> {
+    kitty(control, &[])
+}
+
+fn animation() -> Term {
+    fed(
+        6,
+        8,
+        &[
+            &pixel("a=T,i=1,q=1", RED),
+            &pixel("a=f,i=1,q=1", GREEN),
+            &pixel("a=f,i=1,q=1", BLUE),
+            &order("a=a,i=1,r=1,z=100,q=1"),
+        ],
+    )
+}
+
+fn wide(inputs: &[&[u8]]) -> Term {
+    let mut term = fed(6, 8, &[&kitty("a=T,i=1,s=2,v=1,q=1", &[RED, RED].concat())]);
+    for input in inputs {
+        feed(&mut term, input);
+    }
+    term
+}
+
+fn shown(term: &Term) -> Vec<u8> {
+    tiles(term, 0)[0].picture.pixels.clone()
+}
+
+fn run(term: &mut Term, start: Instant, times: &[u64]) -> Option<Instant> {
+    times.iter().fold(None, |_, &time| {
+        term.animate(start + Duration::from_millis(time))
+    })
+}
+
+fn played(controls: &[&str], times: &[u64]) -> Vec<u8> {
+    let mut term = animation();
+    for control in controls {
+        feed(&mut term, &order(control));
+    }
+    run(&mut term, Instant::now(), times);
+    shown(&term)
+}
+
+fn jumped(term: &mut Term, frame: u32) -> Vec<u8> {
+    feed(term, &order(&format!("a=a,i=1,c={frame},q=1")));
+    term.animate(Instant::now());
+    shown(term)
 }
 
 #[test]
@@ -559,11 +619,448 @@ fn broken_png_data_is_rejected() {
 }
 
 #[test]
-fn animation_commands_are_rejected() {
+fn frame_is_acknowledged() {
     assert_eq!(
-        answered(&[&kitty("a=f,i=1", &[])]),
-        answer(1, "EINVAL:unsupported action")
+        answered(&[&pixel("a=t,i=1,q=1", RED), &pixel("a=f,i=1", GREEN)]),
+        answer(1, "OK")
     );
+}
+
+#[test]
+fn frame_for_an_unknown_image_is_reported_missing() {
+    assert_eq!(answered(&[&pixel("a=f,i=1", GREEN)]), answer(1, MISSING));
+}
+
+#[test]
+fn frame_by_number_goes_to_the_newest_image_with_that_number() {
+    assert_eq!(
+        answered(&[&pixel("a=t,I=4,q=1", RED), &pixel("a=f,I=4", GREEN)]),
+        "\x1b_Gi=4294967295,I=4;OK\x1b\\"
+    );
+}
+
+#[test]
+fn frame_data_outside_the_image_is_rejected() {
+    let mut term = wide(&[&pixel("a=f,i=1,x=2", GREEN)]);
+    assert_eq!(
+        reply(&mut term),
+        answer(1, "EINVAL:the frame data is outside the image")
+    );
+}
+
+#[test]
+fn frame_with_a_base_past_the_last_frame_is_rejected() {
+    let mut term = wide(&[&pixel("a=f,i=1,c=3", GREEN)]);
+    assert_eq!(reply(&mut term), answer(1, NO_FRAME));
+}
+
+#[test]
+fn frame_with_an_edit_past_the_last_frame_is_rejected() {
+    let mut term = wide(&[&pixel("a=f,i=1,r=2", GREEN)]);
+    assert_eq!(reply(&mut term), answer(1, NO_FRAME));
+}
+
+#[test]
+fn new_frame_starts_from_a_transparent_canvas() {
+    let mut term = wide(&[&pixel("a=f,i=1,x=1,q=1", GREEN)]);
+    assert_eq!(jumped(&mut term, 2), [[0; 4], GREEN].concat());
+}
+
+#[test]
+fn background_color_fills_the_canvas_of_a_new_frame() {
+    let mut term = wide(&[&pixel("a=f,i=1,x=1,Y=65535,q=1", GREEN)]);
+    assert_eq!(jumped(&mut term, 2), [BLUE, GREEN].concat());
+}
+
+#[test]
+fn base_frame_fills_the_canvas_of_a_new_frame() {
+    let mut term = wide(&[&pixel("a=f,i=1,x=1,c=1,q=1", GREEN)]);
+    assert_eq!(jumped(&mut term, 2), [RED, GREEN].concat());
+}
+
+#[test]
+fn frame_data_is_alpha_blended_onto_the_canvas() {
+    let mut term = wide(&[&pixel("a=f,i=1,c=1,q=1", [0, 0, 255, 128])]);
+    assert_eq!(jumped(&mut term, 2), [[127, 0, 128, 255], RED].concat());
+}
+
+#[test]
+fn overwrite_mode_replaces_the_canvas_pixels() {
+    let mut term = wide(&[&pixel("a=f,i=1,c=1,X=1,q=1", [0, 0, 255, 128])]);
+    assert_eq!(jumped(&mut term, 2), [[0, 0, 128, 128], RED].concat());
+}
+
+#[test]
+fn edited_root_frame_updates_its_placement() {
+    let mut term = wide(&[&pixel("a=f,i=1,r=1,x=1,q=1", GREEN)]);
+    term.animate(Instant::now());
+    assert_eq!(shown(&term), [RED, GREEN].concat());
+}
+
+#[test]
+fn edited_frame_keeps_its_other_pixels() {
+    let mut term = wide(&[
+        &pixel("a=f,i=1,c=1,q=1", GREEN),
+        &pixel("a=f,i=1,r=2,x=1,q=1", BLUE),
+    ]);
+    assert_eq!(jumped(&mut term, 2), [GREEN, BLUE].concat());
+}
+
+#[test]
+fn chunked_frame_data_is_joined() {
+    let data = encoded(&GREEN);
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=T,i=1,q=1", RED),
+            format!(
+                "\x1b_Ga=f,i=1,s=1,v=1,q=1,m=1;{}\x1b\\\x1b_Ga=f,m=0;{}\x1b\\",
+                &data[..4],
+                &data[4..]
+            )
+            .as_bytes(),
+        ],
+    );
+    assert_eq!(jumped(&mut term, 2), GREEN);
+}
+
+#[test]
+fn current_frame_is_chosen_by_the_client() {
+    assert_eq!(jumped(&mut animation(), 3), BLUE);
+}
+
+#[test]
+fn current_frame_past_the_last_frame_is_rejected() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,c=4"));
+    assert_eq!(reply(&mut term), answer(1, NO_FRAME));
+}
+
+#[test]
+fn control_of_an_unknown_image_is_reported_missing() {
+    assert_eq!(answered(&[&order("a=a,i=1,s=3")]), answer(1, MISSING));
+}
+
+#[test]
+fn control_is_acknowledged() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=3"));
+    assert_eq!(reply(&mut term), answer(1, "OK"));
+}
+
+#[test]
+fn placement_shows_the_current_frame() {
+    let term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=t,i=1,q=1", RED),
+            &pixel("a=f,i=1,q=1", GREEN),
+            &order("a=a,i=1,c=2,q=1"),
+            &order("a=p,i=1,q=1"),
+        ],
+    );
+    assert_eq!(shown(&term), GREEN);
+}
+
+#[test]
+fn new_animation_is_stopped() {
+    assert_eq!(played(&[], &[0, 1000]), RED);
+}
+
+#[test]
+fn running_animation_keeps_a_frame_until_its_gap_has_passed() {
+    assert_eq!(played(&["a=a,i=1,s=3"], &[0, 99]), RED);
+}
+
+#[test]
+fn running_animation_moves_on_once_the_gap_has_passed() {
+    assert_eq!(played(&["a=a,i=1,s=3"], &[0, 100]), GREEN);
+}
+
+#[test]
+fn running_animation_reports_when_the_frame_changes_next() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=3"));
+    let start = Instant::now();
+    assert_eq!(
+        run(&mut term, start, &[0]),
+        Some(start + Duration::from_millis(100))
+    );
+}
+
+#[test]
+fn new_frames_have_a_gap_of_forty_milliseconds() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=3"));
+    let start = Instant::now();
+    assert_eq!(
+        run(&mut term, start, &[0, 100]),
+        Some(start + Duration::from_millis(140))
+    );
+}
+
+#[test]
+fn frame_gap_is_taken_from_the_frame_data() {
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=T,i=1,q=1", RED),
+            &pixel("a=f,i=1,z=250,q=1", GREEN),
+            &order("a=a,i=1,s=3"),
+        ],
+    );
+    let start = Instant::now();
+    assert_eq!(
+        run(&mut term, start, &[0]),
+        Some(start + Duration::from_millis(250))
+    );
+}
+
+#[test]
+fn frame_gap_is_changed_by_a_control_command() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,r=2,z=500,s=3"));
+    let start = Instant::now();
+    assert_eq!(
+        run(&mut term, start, &[0, 100]),
+        Some(start + Duration::from_millis(600))
+    );
+}
+
+#[test]
+fn root_frame_without_a_gap_is_skipped() {
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=T,i=1,q=1", RED),
+            &pixel("a=f,i=1,q=1", GREEN),
+            &order("a=a,i=1,s=3"),
+        ],
+    );
+    term.animate(Instant::now());
+    assert_eq!(shown(&term), GREEN);
+}
+
+#[test]
+fn gapless_frame_is_skipped() {
+    assert_eq!(played(&["a=a,i=1,r=2,z=-1,s=3"], &[0, 100]), BLUE);
+}
+
+#[test]
+fn running_animation_loops_back_to_the_first_frame() {
+    assert_eq!(played(&["a=a,i=1,s=3"], &[0, 100, 140, 180]), RED);
+}
+
+#[test]
+fn loop_count_of_two_plays_the_frames_once() {
+    assert_eq!(
+        played(&["a=a,i=1,s=3,v=2"], &[0, 100, 140, 180, 1000]),
+        BLUE
+    );
+}
+
+#[test]
+fn loop_count_of_three_plays_the_frames_twice() {
+    assert_eq!(
+        played(
+            &["a=a,i=1,s=3,v=3"],
+            &[0, 100, 140, 180, 280, 320, 360, 1000]
+        ),
+        BLUE
+    );
+}
+
+#[test]
+fn finished_animation_reports_no_next_change() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=3,v=2"));
+    assert_eq!(run(&mut term, Instant::now(), &[0, 100, 140, 180]), None);
+}
+
+#[test]
+fn stopping_resets_the_loop_counter() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=3,v=3"));
+    let start = Instant::now();
+    run(&mut term, start, &[0, 100, 140, 180]);
+    feed(&mut term, &order("a=a,i=1,s=1"));
+    feed(&mut term, &order("a=a,i=1,s=3"));
+    run(&mut term, start, &[200, 300, 340, 380]);
+    assert_eq!(shown(&term), RED);
+}
+
+#[test]
+fn stopped_animation_keeps_its_frame() {
+    assert_eq!(played(&["a=a,i=1,s=3", "a=a,i=1,s=1"], &[0, 1000]), RED);
+}
+
+#[test]
+fn stopped_animation_reports_no_next_change() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=1"));
+    assert_eq!(term.animate(Instant::now()), None);
+}
+
+#[test]
+fn loading_animation_waits_at_the_last_frame() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=2"));
+    let start = Instant::now();
+    assert_eq!(
+        (run(&mut term, start, &[0, 100, 140, 180]), shown(&term)),
+        (None, BLUE.to_vec())
+    );
+}
+
+#[test]
+fn loading_animation_moves_on_to_a_frame_that_arrives_later() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=2"));
+    let start = Instant::now();
+    run(&mut term, start, &[0, 100, 140, 180]);
+    feed(&mut term, &pixel("a=f,i=1,q=1", [9, 9, 9, 255]));
+    run(&mut term, start, &[200]);
+    assert_eq!(shown(&term), [9, 9, 9, 255]);
+}
+
+#[test]
+fn animation_without_a_visible_placement_reports_no_next_change() {
+    let mut term = fed(
+        6,
+        8,
+        &[
+            &pixel("a=t,i=1,q=1", RED),
+            &pixel("a=f,i=1,q=1", GREEN),
+            &order("a=a,i=1,r=1,z=100,s=3,q=1"),
+        ],
+    );
+    assert_eq!(term.animate(Instant::now()), None);
+}
+
+#[test]
+fn screen_without_animations_reports_no_next_change() {
+    assert_eq!(pair().animate(Instant::now()), None);
+}
+
+#[test]
+fn frame_change_marks_only_the_rows_of_the_image() {
+    let mut term = animation();
+    feed(&mut term, &order("a=a,i=1,s=3"));
+    let start = Instant::now();
+    run(&mut term, start, &[0]);
+    term.reset_damage();
+    run(&mut term, start, &[100]);
+    assert_eq!(
+        (
+            term.damage().is_full(),
+            term.damage().line(0),
+            term.damage().line(1)
+        ),
+        (false, true, false)
+    );
+}
+
+#[test]
+fn frame_change_keeps_the_serial_number_of_the_picture() {
+    let mut term = animation();
+    let serial = tiles(&term, 0)[0].picture.serial;
+    jumped(&mut term, 2);
+    assert_eq!(tiles(&term, 0)[0].picture.serial, serial);
+}
+
+#[test]
+fn frame_change_reaches_a_placement_scrolled_back_into_view() {
+    let mut term = animation();
+    feed(&mut term, b"\r\n\n\n\n\n\n");
+    feed(&mut term, &order("a=a,i=1,c=2,q=1"));
+    term.scroll_display(6);
+    term.animate(Instant::now());
+    assert_eq!(term.grid().absolute(0).tiles()[0].picture.pixels, GREEN);
+}
+
+#[test]
+fn composition_copies_a_rectangle_between_frames() {
+    let mut term = wide(&[
+        &kitty("a=f,i=1,s=2,v=1,q=1", &[GREEN, BLUE].concat()),
+        &order("a=c,i=1,r=2,c=1,w=1,h=1,X=1,C=1,q=1"),
+    ]);
+    term.animate(Instant::now());
+    assert_eq!(shown(&term), [BLUE, RED].concat());
+}
+
+#[test]
+fn composition_blends_by_default() {
+    let mut term = wide(&[
+        &kitty("a=f,i=1,s=2,v=1,q=1", &[[0; 4], BLUE].concat()),
+        &order("a=c,i=1,r=2,c=1,q=1"),
+    ]);
+    term.animate(Instant::now());
+    assert_eq!(shown(&term), [RED, BLUE].concat());
+}
+
+#[test]
+fn composition_inside_one_frame_copies_between_separate_rectangles() {
+    let mut term = wide(&[
+        &pixel("a=f,i=1,r=1,x=1,q=1", GREEN),
+        &order("a=c,i=1,r=1,c=1,w=1,X=1,q=1"),
+    ]);
+    term.animate(Instant::now());
+    assert_eq!(shown(&term), [GREEN, GREEN].concat());
+}
+
+#[test]
+fn composition_of_an_unknown_frame_is_reported_missing() {
+    let mut term = wide(&[&order("a=c,i=1,r=2,c=1")]);
+    assert_eq!(reply(&mut term), answer(1, NO_FRAME));
+}
+
+#[test]
+fn composition_of_an_unknown_image_is_reported_missing() {
+    assert_eq!(answered(&[&order("a=c,i=1,r=1,c=1")]), answer(1, MISSING));
+}
+
+#[test]
+fn composition_outside_the_image_is_rejected() {
+    let mut term = wide(&[&pixel("a=f,i=1,q=1", GREEN), &order("a=c,i=1,r=2,c=1,x=1")]);
+    assert_eq!(
+        reply(&mut term),
+        answer(1, "EINVAL:the rectangle is outside the image")
+    );
+}
+
+#[test]
+fn composition_of_overlapping_rectangles_in_one_frame_is_rejected() {
+    let mut term = wide(&[&order("a=c,i=1,r=1,c=1")]);
+    assert_eq!(reply(&mut term), answer(1, "EINVAL:the rectangles overlap"));
+}
+
+#[test]
+fn deleting_frames_returns_to_the_root_frame() {
+    let mut term = animation();
+    jumped(&mut term, 2);
+    feed(&mut term, &order("a=d,d=f,i=1"));
+    term.animate(Instant::now());
+    assert_eq!(shown(&term), RED);
+}
+
+#[test]
+fn deleted_frames_cannot_be_chosen() {
+    let mut term = animation();
+    feed(&mut term, &order("a=d,d=F,i=1"));
+    feed(&mut term, &order("a=a,i=1,c=2"));
+    assert_eq!(reply(&mut term), answer(1, NO_FRAME));
+}
+
+#[test]
+fn sending_the_image_again_drops_its_frames() {
+    let mut term = animation();
+    feed(&mut term, &pixel("a=t,i=1,q=1", RED));
+    feed(&mut term, &order("a=a,i=1,c=2"));
+    assert_eq!(reply(&mut term), answer(1, NO_FRAME));
 }
 
 #[test]
