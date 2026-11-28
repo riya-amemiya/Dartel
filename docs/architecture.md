@@ -869,7 +869,10 @@ flowchart TD
   zero width joiner U+200D, and `linker` when it rasterizes a skin tone
   modifier from U+1F3FB to U+1F3FF or a regional indicator.
   `Scene::forget_glyphs` clears both, so a frame of text without them pays
-  one check in `Scene::compose`.
+  one check in `Scene::compose`. A frame that rebuilds every line and finds
+  no line that can hold a sequence clears both flags as well, and drops the
+  glyphs of those characters from the glyph cache, so the next one of them is
+  rasterized again and sets its flag again.
 - `Scene::unite` looks for sequences only in a line that can hold one. A line
   with a joiner among its marks can, and while `linker` is set, so can a line
   where `candidates` finds a character from U+1F1E6 to U+1F3FF, the range
