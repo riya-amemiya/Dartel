@@ -108,7 +108,7 @@ Dartel/
 │       │   └── dartel.zsh    # precmd and preexec hooks
 │       └── src/
 │           ├── main.rs       # config and shell subcommands, event loop start
-│           ├── app.rs        # winit handler, tabs, selection, prompts, shortcuts
+│           ├── app.rs        # winit handler, windows, tabs, selection, prompts, shortcuts
 │           ├── clipboard.rs  # Clipboard through the platform commands
 │           ├── input.rs      # Key event to byte sequence encoding
 │           ├── opener.rs     # Links and paths through the platform opener
@@ -265,6 +265,12 @@ Build and test for that target run on the macOS CI job.
   value as the scalar one for every input.
 - Every tab is resized with the window, and `Scene::invalidate` runs when the
   active tab changes, because `Scene` caches the rows of one `Term`.
+- `App` holds one `View` per window, and each `View` owns its window, `Gpu`,
+  `Scene`, and tabs. Session ids come from one counter that `App` shares with
+  every `View`, so an id names one session in the whole process.
+  `Signal::Wake` and `Signal::Exit` reach the `View` that holds the session,
+  and a `WindowEvent` reaches the `View` whose window has its `WindowId`. A
+  `View` asks `App` for work on other windows through `View::request`.
 - An image is one `Picture` cut into `Tile`s that live in the rows it covers.
   `Row::reset` drops every tile, `Row::clear` keeps the tiles of the kitty
   protocol, and `Row::release` cuts the written cells out of Sixel tiles. A new
@@ -346,9 +352,11 @@ Without a window manager the window has no focus, so run
 `xdotool key ctrl+shift+f` opens the search prompt, `ctrl+shift+c` copies the
 selection, `ctrl+shift+v` pastes, `ctrl+shift+t` opens a tab, and
 `ctrl+shift+s` and `ctrl+shift+l` open the settings prompts.
-`ctrl+shift+w` closes the tab, `ctrl+shift+1` selects the first tab,
-`ctrl+shift+equal`, `ctrl+shift+minus`, and `ctrl+shift+0` change the font
-size, and `ctrl+shift+o` copies the last output. These are the default
+`ctrl+shift+w` closes the tab, `ctrl+shift+n` opens a window, `ctrl+shift+1`
+selects the first tab, `ctrl+shift+equal`, `ctrl+shift+minus`, and
+`ctrl+shift+0` change the font size, and `ctrl+shift+o` copies the last
+output. `xdotool search --name Dartel` prints one id for each window, and
+`xdotool windowmove` puts them side by side. These are the default
 shortcuts, and a loaded `[keys]` table replaces them. Set `HOME` to a
 scratch directory and unset `XDG_CONFIG_HOME` and `XDG_STATE_HOME` for the
 run, so the settings files stay out of the real home directory. Running on
