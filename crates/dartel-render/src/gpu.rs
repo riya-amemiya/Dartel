@@ -375,22 +375,24 @@ impl Gpu {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.instances.slice(..size_of_val(quads) as u64));
-            let mut first = 0;
-            for layer in layers {
-                let bindings = match &layer.picture {
-                    Some(picture) => self
-                        .pictures
-                        .get(&key(picture))
-                        .map(|canvas| &canvas.bindings),
-                    None => Some(&self.bindings),
-                };
-                if let Some(bindings) = bindings {
-                    pass.set_bind_group(0, bindings, &[]);
-                    pass.draw(0..4, first..first + layer.count);
+            if !quads.is_empty() {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.instances.slice(..size_of_val(quads) as u64));
+                let mut first = 0;
+                for layer in layers {
+                    let bindings = match &layer.picture {
+                        Some(picture) => self
+                            .pictures
+                            .get(&key(picture))
+                            .map(|canvas| &canvas.bindings),
+                        None => Some(&self.bindings),
+                    };
+                    if let Some(bindings) = bindings {
+                        pass.set_bind_group(0, bindings, &[]);
+                        pass.draw(0..4, first..first + layer.count);
+                    }
+                    first += layer.count;
                 }
-                first += layer.count;
             }
         }
         self.queue.submit([encoder.finish()]);
