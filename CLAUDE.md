@@ -111,6 +111,7 @@ Dartel/
 │           ├── main.rs       # config and shell subcommands, font scan and event loop start
 │           ├── app.rs        # winit handler, windows, tabs, selection, prompts, shortcuts
 │           ├── clipboard.rs  # Clipboard through the platform commands
+│           ├── crash.rs      # Panic hook that appends a report to crash.log
 │           ├── input.rs      # Key event to byte sequence encoding
 │           ├── opener.rs     # Links and paths through the platform opener
 │           └── session.rs    # Reader and writer threads around the PTY
@@ -320,6 +321,11 @@ Build and test for that target run on the macOS CI job.
   `dartel-fonts` thread before it builds the event loop, and `View::new` joins
   the thread after the window exists. Keep the scan off the UI thread between
   the start of the process and the first frame.
+- `crash::install` runs before `run` starts any thread, so a panic on any
+  thread of the window appends its message, location, thread name, and
+  backtrace to `crash.log` next to the state file, and then the previous hook
+  prints the message. The hook works only while a thread panics, so it costs
+  nothing on the hot paths.
 - `Fonts::ligatures` is decided once in `Fonts::new`. Ligatures are applied by
   `Scene::ligate_rows` after `Scene::compose_rows`, on the same rebuilt lines,
   by swapping glyph quads that `Scene::compose_row` built, so
